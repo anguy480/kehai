@@ -1,0 +1,424 @@
+"""Synthetic data generators for the test suite.
+
+No test touches real recordings. Everything is built here from a single shared
+speaking schedule, so the audio, the mouth movement in the video and the
+diarization transcript all agree with each other. That is what makes the
+end-to-end test meaningful rather than merely green: a stage that mismatches
+speakers, misplaces a turn boundary or correlates the wrong video tile produces
+a wrong answer against a known ground truth.
+
+Conventions used throughout:
+
+* `SPK_A` is the psychiatrist and speaks first, from the LEFT video tile.
+* `SPK_B` is the participant and speaks from the RIGHT tile.
+* Tones differ in pitch per speaker, so pitch features have something to find.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import wave
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pandas as pd
+
+PSYCHIATRIST = "SPEAKER_00"
+PARTICIPANT = "SPEAKER_01"
+
+# Distinct pitches, roughly an octave apart, so F0 is measurable per speaker.
+SPEAKER_TONE_HZ: dict[str, float] = {PSYCHIATRIST: 110.0, PARTICIPANT: 220.0}
+SPEAKER_TILE: dict[str, str] = {PSYCHIATRIST: "left", PARTICIPANT: "right"}
+
+
+@dataclass(frozen=True, slots=True)
+class Utterance:
+    """One stretch of speech by one speaker."""
+
+    speaker: str
+    start: float
+    end: float
+    text: str = "..."
+
+    @property
+    def duration(self) -> float:
+        """Length in seconds."""
+        return self.end - self.start
+
+
+@dataclass(frozen=True, slots=True)
+class SyntheticSession:
+    """A complete synthetic session: what is said, by whom, and when."""
+
+    session_id: int
+    utterances: tuple[Utterance, ...]
+    duration: float
+    width: int = 320
+    height: int = 180
+    fps: float = 10.0
+    sample_rate: int = 16000
+    speakers: tuple[str, str] = (PSYCHIATRIST, PARTICIPANT)
+
+    def spans(self, speaker: str) -> tuple[tuple[float, float], ...]:
+        """Speaking spans for one speaker."""
+        return tuple((u.start, u.end) for u in self.utterances if u.speaker == speaker)
+
+    def speaking_at(self, speaker: str, t: float) -> bool:
+        """Whether `speaker` is speaking at time `t`."""
+        return any(start <= t < end for start, end in self.spans(speaker))
+
+    def total_speech(self, speaker: str) -> float:
+        """Total seconds of speech by one speaker."""
+        return sum(u.duration for u in self.utterances if u.speaker == speaker)
+
+
+def alternating_session(
+    session_id: int,
+    *,
+    n_turns: int = 6,
+    turn_s: float = 1.5,
+    gap_s: float = 0.5,
+    lead_in_s: float = 0.5,
+    duration: float | None = None,
+    **geometry: float | int,
+) -> SyntheticSession:
+    """Build a session of clean alternating turns separated by fixed gaps.
+
+    Every gap is `gap_s`, so response latency has an exact expected value and
+    the turn/latency mathematics can be checked against it.
+
+    Args:
+        session_id: Session identifier.
+        n_turns: Total number of turns, alternating psychiatrist first.
+        turn_s: Length of each turn.
+        gap_s: Silence between consecutive turns.
+        lead_in_s: Silence before the first turn.
+        duration: Total length. Defaults to just past the final turn.
+        **geometry: Frame geometry overrides for `SyntheticSession`, e.g.
+            `width`, `height`, `fps`, `sample_rate`.
+
+    Returns:
+        The synthetic session.
+    """
+    utterances: list[Utterance] = []
+    cursor = lead_in_s
+    for turn in range(n_turns):
+        speaker = PSYCHIATRIST if turn % 2 == 0 else PARTICIPANT
+        utterances.append(
+            Utterance(speaker=speaker, start=cursor, end=cursor + turn_s, text=f"turn {turn}")
+        )
+        cursor += turn_s + gap_s
+    return SyntheticSession(
+        session_id=session_id,
+        utterances=tuple(utterances),
+        duration=cursor if duration is None else duration,
+        **geometry,
+    )
+
+
+def overlapping_session(
+    session_id: int, *, duration: float = 10.0, **geometry: float | int
+) -> SyntheticSession:
+    """A session containing a deliberate overlap, for overlap-exclusion tests."""
+    utterances = (
+        Utterance(PSYCHIATRIST, 0.5, 3.0, "question"),
+        # Starts before the psychiatrist has finished: 0.5 s of overlap.
+        Utterance(PARTICIPANT, 2.5, 6.0, "answer"),
+        Utterance(PSYCHIATRIST, 7.0, 8.5, "follow up"),
+    )
+    return SyntheticSession(
+        session_id=session_id,
+        utterances=utterances,
+        duration=duration,
+        **geometry,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Audio
+# ---------------------------------------------------------------------------
+def _tone(frequency: float, n_samples: int, sample_rate: int, amplitude: float) -> np.ndarray:
+    """A sine tone with a short fade in and out, to avoid clicks."""
+    t = np.arange(n_samples, dtype=np.float64) / sample_rate
+    wave_data = amplitude * np.sin(2.0 * np.pi * frequency * t)
+    fade = min(int(0.01 * sample_rate), max(n_samples // 4, 1))
+    if fade > 0:
+        ramp = np.linspace(0.0, 1.0, fade)
+        wave_data[:fade] *= ramp
+        wave_data[-fade:] *= ramp[::-1]
+    return wave_data
+
+
+def session_waveform(
+    session: SyntheticSession,
+    *,
+    speakers: Sequence[str] | None = None,
+    amplitude: float = 0.35,
+    noise: float = 0.001,
+) -> np.ndarray:
+    """Render a session to a float waveform in [-1, 1].
+
+    Args:
+        session: The session to render.
+        speakers: Which speakers to include. Defaults to all of them, i.e. a
+            single mixed stream.
+        amplitude: Tone amplitude.
+        noise: Amplitude of background noise, so the signal is not pure
+            silence, which some voice-activity detectors treat specially.
+
+    Returns:
+        A 1-D float array of `duration * sample_rate` samples.
+    """
+    wanted = set(speakers) if speakers is not None else {u.speaker for u in session.utterances}
+    n = round(session.duration * session.sample_rate)
+    rng = np.random.default_rng(session.session_id)
+    signal = rng.normal(0.0, noise, size=n) if noise > 0 else np.zeros(n)
+
+    for utterance in session.utterances:
+        if utterance.speaker not in wanted:
+            continue
+        start = round(utterance.start * session.sample_rate)
+        end = min(round(utterance.end * session.sample_rate), n)
+        if end <= start:
+            continue
+        frequency = SPEAKER_TONE_HZ.get(utterance.speaker, 150.0)
+        signal[start:end] += _tone(frequency, end - start, session.sample_rate, amplitude)
+
+    return np.clip(signal, -1.0, 1.0)
+
+
+def write_wav(path: Path, samples: np.ndarray, sample_rate: int) -> Path:
+    """Write a mono 16-bit PCM WAV file using only the standard library."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pcm = np.clip(samples * 32767.0, -32768, 32767).astype("<i2")
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(pcm.tobytes())
+    return path
+
+
+def write_session_wav(
+    path: Path, session: SyntheticSession, *, speakers: Sequence[str] | None = None
+) -> Path:
+    """Render and write a session's audio in one call."""
+    samples = session_waveform(session, speakers=speakers)
+    return write_wav(path, samples, session.sample_rate)
+
+
+# ---------------------------------------------------------------------------
+# Video
+# ---------------------------------------------------------------------------
+def write_session_video(path: Path, session: SyntheticSession) -> Path:
+    """Write a synthetic two-tile "gallery view" video.
+
+    Each half of the frame holds a face: a filled circle with a mouth whose
+    height grows while that speaker is talking. The mouth is what makes the
+    speaker/tile cross-check testable, because tile brightness in the mouth
+    region correlates with that speaker's speech and with nothing else.
+
+    Args:
+        path: Output video path.
+        session: Session defining the speaking schedule and frame geometry.
+
+    Returns:
+        `path`.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(
+        str(path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        session.fps,
+        (session.width, session.height),
+    )
+    if not writer.isOpened():  # pragma: no cover - depends on local codecs
+        msg = f"OpenCV could not open a writer for {path}"
+        raise RuntimeError(msg)
+
+    half = session.width // 2
+    centres = {"left": half // 2, "right": half + half // 2}
+    n_frames = round(session.duration * session.fps)
+
+    try:
+        for index in range(n_frames):
+            t = index / session.fps
+            frame = np.full((session.height, session.width, 3), 30, dtype=np.uint8)
+            # A visible seam between tiles, so a wrong crop is obvious by eye.
+            frame[:, half - 1 : half + 1] = 90
+
+            for speaker in session.speakers:
+                tile = SPEAKER_TILE[speaker]
+                cx, cy = centres[tile], session.height // 2
+                cv2.circle(frame, (cx, cy), session.height // 4, (200, 180, 160), -1)
+                speaking = session.speaking_at(speaker, t)
+                # Oscillating mouth while speaking, nearly closed otherwise.
+                openness = 0.5 + 0.5 * float(np.sin(2.0 * np.pi * 3.0 * t)) if speaking else 0.0
+                mouth_h = max(1, round(2 + openness * session.height * 0.12))
+                mouth_w = session.height // 6
+                cv2.rectangle(
+                    frame,
+                    (cx - mouth_w // 2, cy + session.height // 10),
+                    (cx + mouth_w // 2, cy + session.height // 10 + mouth_h),
+                    (40, 20, 20),
+                    -1,
+                )
+            writer.write(frame)
+    finally:
+        writer.release()
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Muxing, to produce something ffprobe sees as a real recording
+# ---------------------------------------------------------------------------
+def mux(
+    out_path: Path,
+    video: Path,
+    audio_streams: Sequence[Path],
+    *,
+    ffmpeg: str = "ffmpeg",
+) -> Path:
+    """Mux a video file and one or more WAV files into an mp4.
+
+    Several audio streams are supported so the inventory stage's handling of the
+    unresolved "one mixed stream or two" question can be tested both ways.
+
+    Args:
+        out_path: Destination mp4.
+        video: Source video file.
+        audio_streams: One or more WAV files, each becoming its own stream.
+        ffmpeg: ffmpeg executable.
+
+    Returns:
+        `out_path`.
+
+    Raises:
+        RuntimeError: if ffmpeg fails.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [ffmpeg, "-y", "-loglevel", "error", "-i", str(video)]
+    for stream in audio_streams:
+        command += ["-i", str(stream)]
+    command += ["-map", "0:v:0"]
+    for index in range(len(audio_streams)):
+        command += ["-map", f"{index + 1}:a:0"]
+    command += ["-c:v", "copy", "-c:a", "aac", "-shortest", str(out_path)]
+
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        msg = f"ffmpeg failed muxing {out_path.name}: {result.stderr.strip()[:400]}"
+        raise RuntimeError(msg)
+    return out_path
+
+
+def write_session_mp4(
+    out_path: Path,
+    session: SyntheticSession,
+    *,
+    tmp_dir: Path,
+    per_speaker_audio: bool = False,
+    ffmpeg: str = "ffmpeg",
+) -> Path:
+    """Build a complete synthetic recording: video plus audio, muxed to mp4.
+
+    Args:
+        out_path: Destination mp4, normally `<session_id>.mp4`.
+        session: The session to render.
+        tmp_dir: Scratch directory for the intermediate video and WAV files.
+        per_speaker_audio: Write one audio stream per speaker instead of a
+            single mixed stream.
+        ffmpeg: ffmpeg executable.
+
+    Returns:
+        `out_path`.
+    """
+    video = write_session_video(tmp_dir / f"{session.session_id}_video.mp4", session)
+    if per_speaker_audio:
+        streams = [
+            write_session_wav(
+                tmp_dir / f"{session.session_id}_{speaker}.wav", session, speakers=[speaker]
+            )
+            for speaker in session.speakers
+        ]
+    else:
+        streams = [write_session_wav(tmp_dir / f"{session.session_id}_mixed.wav", session)]
+    return mux(out_path, video, streams, ffmpeg=ffmpeg)
+
+
+# ---------------------------------------------------------------------------
+# Diarization output
+# ---------------------------------------------------------------------------
+def _srt_timestamp(seconds: float) -> str:
+    """Format seconds as an SRT timestamp (`HH:MM:SS,mmm`)."""
+    if seconds < 0:
+        msg = f"negative timestamp: {seconds}"
+        raise ValueError(msg)
+    total_ms = round(seconds * 1000)
+    hours, remainder = divmod(total_ms, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    secs, millis = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def srt_text(session: SyntheticSession, *, speaker_prefix: str = "") -> str:
+    """Render a session as whisper-diarization style SRT.
+
+    Speaker labels are carried in the cue text as `SPEAKER_00: ...`, which is
+    what whisper-diarization emits.
+
+    Args:
+        session: Session to render.
+        speaker_prefix: Optional prefix, for testing unfamiliar label styles.
+
+    Returns:
+        The SRT file contents.
+    """
+    blocks: list[str] = []
+    for index, utterance in enumerate(session.utterances, start=1):
+        label = f"{speaker_prefix}{utterance.speaker}"
+        blocks.append(
+            f"{index}\n"
+            f"{_srt_timestamp(utterance.start)} --> {_srt_timestamp(utterance.end)}\n"
+            f"{label}: {utterance.text}\n"
+        )
+    return "\n".join(blocks)
+
+
+def write_srt(path: Path, session: SyntheticSession, *, speaker_prefix: str = "") -> Path:
+    """Write a session's SRT file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(srt_text(session, speaker_prefix=speaker_prefix), encoding="utf-8")
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Labels, for the analysis half
+# ---------------------------------------------------------------------------
+def labels_frame(
+    session_ids: Sequence[int],
+    *,
+    targets: Sequence[str] = ("K6", "SRS2"),
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Build a synthetic labels table as a DataFrame.
+
+    Values are random: these tests check plumbing, validation and the absence of
+    leakage, not predictive performance.
+
+    Args:
+        session_ids: Sessions to score.
+        targets: Target column names.
+        seed: Random seed.
+
+    Returns:
+        A pandas DataFrame with `session_id` and one column per target.
+    """
+    rng = np.random.default_rng(seed)
+    data: dict[str, object] = {"session_id": list(session_ids)}
+    for target in targets:
+        data[target] = rng.normal(10.0, 4.0, size=len(session_ids)).round(2)
+    return pd.DataFrame(data)

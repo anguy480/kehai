@@ -1,0 +1,261 @@
+# ---------------------------------------------------------------------------
+# vc-multimodal default configuration
+#
+# Every setting is validated against the pydantic models in
+# src/vc_multimodal/config.py. Unknown keys are an error, not a warning.
+#
+# Items marked UNCONFIRMED are project unknowns. They are surfaced here on
+# purpose: nothing about the recordings is guessed in code. Confirm each one,
+# then edit it here.
+#
+# Filesystem roots are NOT configured here. They come from the environment
+# ($VC_DATA_ROOT, $VC_WORK_ROOT, $VC_OUT_ROOT) or a gitignored .env, so that no
+# path to clinical data is ever committed.
+# ---------------------------------------------------------------------------
+
+dataset:
+  expected_sessions: 62
+  media_glob: "*.mp4"
+
+  # The five recording-date folders, grouped into recruitment waves. Folder
+  # names contain spaces and are matched exactly. Session-ID ranges are used to
+  # cross-check that each file sits in the wave its ID implies.
+  waves:
+    winter:
+      folders:
+        - "December 21 2025"
+        - "January 17 2026"
+        - "January 31 2026"
+      id_min: 1
+      id_max: 62
+    summer:
+      folders:
+        - "July 4 2026"
+        - "August 1 2026"
+      id_min: 102
+      id_max: 261
+
+  # Sessions are nominally 10-12 minutes. A recording is flagged if it falls
+  # outside the absolute window OR more than mad_k median-absolute-deviations
+  # from the cohort median. Flagging never drops a session; it only reports.
+  duration:
+    min_seconds: 480.0    # 8 min
+    max_seconds: 900.0    # 15 min
+    mad_k: 4.0
+
+  # Already known to be unusually short. Listed so the inventory can report it
+  # as expected rather than as a surprise.
+  known_short_sessions: [210]
+
+video:
+  # UNCONFIRMED. Zoom two-person gallery view is expected: psychiatrist left,
+  # participant right. It may instead be active-speaker view, in which a single
+  # tile switches between people and per-tile cropping is invalid.
+  # Confirm with `vc preview`, then set this to "gallery" or "active_speaker".
+  layout: "gallery"
+
+  # Crop boxes in fractional frame coordinates (origin top-left), so one config
+  # works at any resolution. Defaults split the frame down the middle.
+  # UNCONFIRMED: adjust after looking at the preview images.
+  tiles:
+    left:
+      x: 0.0
+      y: 0.0
+      width: 0.5
+      height: 1.0
+    right:
+      x: 0.5
+      y: 0.0
+      width: 0.5
+      height: 1.0
+
+  # UNCONFIRMED: which tile holds whom.
+  participant_tile: "right"
+  psychiatrist_tile: "left"
+
+  # `vc preview` writes ONE image per session: a grid of every tile at each of
+  # these timestamps. Several timestamps are used so that a layout which
+  # switches mid-session (active-speaker view) is visible at a glance.
+  preview_times_seconds: [60.0, 300.0, 540.0]
+  preview_max_width: 1280
+  preview_format: "jpg"
+
+audio:
+  sample_rate: 16000      # Silero VAD and speaker embeddings both expect 16 kHz
+  codec: "pcm_s16le"      # uncompressed mono WAV
+  # UNCONFIRMED: one mixed stream (likely) or one per speaker. "auto" lets the
+  # inventory stage decide per file. Force with "mixed" or "per_speaker".
+  stream_layout: "auto"
+
+diarization:
+  # "import"              read existing whisper-diarization output (default:
+  #                       reuses the manuscript's transcripts, so the
+  #                       comparison against its text features is direct)
+  # "pyannote"            diarize locally; needs the `pyannote` extra + token
+  # "whisper_diarization" run the upstream tool as an external subprocess and
+  #                       read its output with the importer
+  backend: "import"
+
+  # Directory holding the files to import. UNCONFIRMED: set this once the
+  # original diarization output is available. Keep it under $VC_WORK_ROOT.
+  import_dir: null
+
+  # Filename patterns tried in order when matching a session ID to its files.
+  # `{session_id}` is substituted.
+  import_patterns:
+    - "{session_id}.srt"
+    - "{session_id}.txt"
+    - "{session_id}_speaker.txt"
+    - "{session_id}/{session_id}.srt"
+
+  # Transcript text is retained for diagnostics but written ONLY under
+  # $VC_WORK_ROOT, never printed and never included in a handoff bundle.
+  keep_text: true
+
+  pyannote:
+    model: "pyannote/speaker-diarization-3.1"
+    revision: null          # pin once chosen; recorded in the manifest
+    num_speakers: 2
+    token_env: "HF_TOKEN"
+
+  whisper_diarization:
+    # Invoked as a subprocess in its own environment. Not a Python dependency
+    # of this project: upstream requirements do not install cleanly on Apple
+    # silicon. See scripts/whisper_diarization_setup.md.
+    command: ["python", "diarize.py"]
+    language: "ja"
+    output_dir: null
+    timeout_seconds: 3600.0
+
+speakers:
+  # Primary method: speaker-embedding similarity against a reference clip.
+  embedding_model: "pyannote/embedding"
+  embedding_token_env: "HF_TOKEN"
+
+  # One clip per psychiatrist, relative to $VC_WORK_ROOT/reference/.
+  # UNCONFIRMED whether the same psychiatrist ran every session, especially
+  # across the two waves, so several clips are supported.
+  reference_clips: []
+  # Optional CSV (session_id,psychiatrist_id) restricting each session to one
+  # reference clip. Relative to $VC_WORK_ROOT. Null means compare against all.
+  session_psychiatrist_map: null
+
+  # Flag the session if the best-to-second-best similarity gap is below this.
+  min_margin: 0.10
+
+  mouth_crosscheck:
+    # Independent check: correlate each diarized speaker's speech timeline
+    # against jaw-open movement in EVERY configured tile, not just the
+    # participant's. In gallery view both faces are visible, so a correct
+    # assignment shows each speaker correlating with exactly one tile. This is
+    # a cross-check only; the embedding method decides, and agreement between
+    # the two is recorded as a QC column.
+    enabled: true
+    tiles: null             # null means every tile in video.tiles
+    sample_fps: 10.0
+    min_correlation: 0.15   # below this, the visual evidence is too weak to use
+    min_separation: 0.10    # required gap between best and second-best tile
+
+vad:
+  # Silero VAD is applied INSIDE each diarized segment: whisper-diarization
+  # segments are known to span long silences, so their boundaries cannot be
+  # trusted for timing features. See docs/decisions/0004.
+  threshold: 0.5
+  min_speech_ms: 250
+  min_silence_ms: 100
+  speech_pad_ms: 30
+
+turns:
+  merge_same_speaker_gap_s: 0.30   # bridge micro-gaps within one speaker's turn
+  min_pause_s: 0.18                # shorter silences are not counted as pauses
+  max_latency_s: 10.0              # longer gaps are not treated as a response
+  min_overlap_s: 0.05              # ignore overlaps at annotation resolution
+
+prosody:
+  # Participant speech only, with overlapping speech excluded.
+  f0_floor_hz: 60.0
+  f0_ceiling_hz: 500.0
+  # F0 is expressed in semitones relative to the speaker's OWN median, so that
+  # sex differences in absolute pitch do not dominate. See docs/decisions/0005.
+  semitone_reference: "speaker_median"
+  exclude_overlap: true
+  min_analysis_s: 0.30             # skip fragments too short to measure
+  opensmile:
+    # Extension point for eGeMAPS. Off until a binary is available.
+    enabled: false
+    feature_set: "eGeMAPSv02"
+    executable: null
+
+face:
+  backend: "mediapipe"             # or "openface" to import OpenFace 2.0 CSVs
+  sample_fps: 10.0                 # 5.0 roughly halves runtime if needed
+  min_confidence: 0.50             # drop lower-confidence frames
+  max_dropped_fraction: 0.40       # above this, flag the session in QC
+
+  mediapipe:
+    # Model asset is downloaded once into $VC_WORK_ROOT/models and its version
+    # is recorded in the manifest. No frames are ever written or displayed.
+    model_asset: "face_landmarker.task"
+    model_url: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+    model_sha256: null             # pin after first download
+    # A deliberately small subset: expression channels plus jaw opening, which
+    # the speaker cross-check also uses. Keeping this short protects the
+    # feature budget.
+    blendshapes:
+      - "jawOpen"
+      - "mouthSmileLeft"
+      - "mouthSmileRight"
+      - "browInnerUp"
+      - "browDownLeft"
+      - "browDownRight"
+      - "eyeBlinkLeft"
+      - "eyeBlinkRight"
+    head_pose: true
+
+  openface:
+    csv_dir: null                  # relative to $VC_WORK_ROOT
+    confidence_column: "confidence"
+    success_column: "success"
+
+aggregate:
+  # Robust and non-robust summaries, computed per feature family.
+  stats: ["mean", "sd", "median", "iqr"]
+  min_speaking_s: 30.0             # too little speech to summarise reliably
+  min_listening_s: 30.0
+  # Hard ceiling on the feature count. N=62, so a large feature set overfits;
+  # exceeding this is an error, not a warning. See docs/decisions/0006.
+  max_features: 60
+
+handoff:
+  bundle_dir: "handoff"            # under $VC_OUT_ROOT
+  allow_dirty: false               # refuse to build from a dirty git tree
+
+model:
+  # This dataset is documented as 62 participants across 62 sessions with
+  # unique IDs, so leave-one-participant-out is leave-one-session-out.
+  # Supplying participant_map overrides that with an explicit mapping.
+  grouping: "session"
+  participant_map: null            # CSV: session_id,participant_id
+  targets: ["K6", "SRS2"]
+
+  # Feature sets compared against each other. Names refer to feature families;
+  # "text" is only available when an external text-feature CSV is supplied.
+  feature_sets:
+    turns: ["turns"]
+    prosody: ["prosody"]
+    audio: ["turns", "prosody"]
+    face: ["face_speaking", "face_listening"]
+    all: ["turns", "prosody", "face_speaking", "face_listening"]
+    text: ["text"]
+    text_plus_audio: ["text", "turns", "prosody"]
+    text_plus_all: ["text", "turns", "prosody", "face_speaking", "face_listening"]
+  models: ["elastic_net", "random_forest"]
+  n_permutations: 1000
+  text_features: null               # path to the manuscript's text-feature CSV
+
+runtime:
+  workers: null                     # null: choose from CPU count
+  log_level: "INFO"
+  seed: 20260923
+  # Sessions used by `make pilot`. UNCONFIRMED: replace with three real IDs.
+  pilot_sessions: []

@@ -1,0 +1,10 @@
+# Overlay for piloting: `make pilot` or `vc <stage> --config config/default.yaml
+# --overlay config/pilot.yaml`. Merged on top of default.yaml.
+#
+# Never run all 62 sessions before a pilot succeeds end to end.
+
+runtime:
+  # UNCONFIRMED: replace with the three session IDs chosen for the pilot.
+  pilot_sessions: []
+  workers: 2
+  log_level: "DEBUG"
