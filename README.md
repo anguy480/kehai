@@ -111,6 +111,7 @@ subset.
 
 | Stage | What it does |
 | --- | --- |
+| `vc doctor` | Check the environment before anything else: config validity, ffmpeg/ffprobe versions, the three roots, and whether the raw layout matches expectations. |
 | `vc inventory` | ffprobe every mp4; validate count, IDs, readability; flag duration outliers and variable frame rate. |
 | `vc preview` | Write one cropped frame per session for visual confirmation of the participant tile. |
 | `vc extract-audio` | Mono 16 kHz WAV per session (one per audio stream). |
@@ -132,10 +133,16 @@ Never run 62 sessions first. `config/pilot.yaml` lists a small set of session
 IDs; `make pilot` runs every stage over just those.
 
 ```bash
-uv run vc inventory                      # all sessions, metadata only
-uv run vc inventory --sessions 3,17,28   # a subset
-make pilot                               # every stage, pilot sessions only
+uv run vc doctor                            # is the environment ready?
+uv run vc inventory                         # all sessions, metadata only
+uv run vc --sessions 3,17,28 inventory      # a subset
+uv run vc --sessions 3,17,28 preview        # then look at the sheets yourself
+make pilot                                  # every stage, pilot sessions only
 ```
+
+Global options (`--config`, `--overlay`, `--sessions`, `--workers`, `--force`,
+`--log-level`) come *before* the stage name. Exit codes distinguish a setup
+problem (2) from a stage that ran but had failing sessions (1).
 
 ## Development
 
@@ -151,13 +158,16 @@ model versions are pinned and recorded in every run's manifest.
 
 Tracked here until resolved; each is configurable rather than guessed.
 
-- **Participant identity.** Whether any participant appears in more than one
-  session, which determines the cross-validation grouping. Supported via an
-  optional `participant_id` column in the labels file; falls back to
-  `session_id`, and the manifest records which grouping was used.
-- **Psychiatrist reference clip.** Speaker assignment works best with a short
-  clean clip of the psychiatrist's voice. Without one, the mouth-movement
-  cross-check becomes the primary method.
+- **Participant identity.** *Decided, pending confirmation:* each session is
+  one participant, so leave-one-participant-out is leave-one-session-out. An
+  optional `participant_map.csv` overrides this, and the grouping used is
+  recorded in the manifest. See
+  [ADR 7](docs/decisions/0007-session-as-participant-grouping.md).
+- **Psychiatrist identity and reference clips.** Not confirmed that the same
+  psychiatrist ran every session, especially across waves, so several reference
+  clips are supported with an optional session-to-psychiatrist map. Clips are
+  made by hand into `$VC_WORK_ROOT/reference/`. See
+  [ADR 8](docs/decisions/0008-speaker-assignment-embedding-with-two-tile-crosscheck.md).
 - **Audio stream layout.** One mixed stream or two; determined per file by
   `vc inventory`.
 - **Video layout.** Gallery view (psychiatrist left, participant right) is
@@ -165,7 +175,17 @@ Tracked here until resolved; each is configurable rather than guessed.
   coordinates and confirmed by eye via `vc preview`.
 - **Diarization source.** Reusing the original whisper-diarization output keeps
   the comparison against the manuscript's text features apples-to-apples;
-  re-diarizing locally would confound modality with transcript changes.
+  re-diarizing locally would confound modality with transcript changes. See
+  [ADR 2](docs/decisions/0002-pluggable-diarization-backends.md).
+
+## Design decisions
+
+The reasoning behind the choices that would otherwise be invisible in the code
+is recorded in [docs/decisions/](docs/decisions/): the handoff split, pluggable
+diarization, MediaPipe versus OpenFace, VAD inside diarized segments, semitone
+normalisation, the feature budget for N=62, participant grouping, and speaker
+assignment. [docs/data.md](docs/data.md) documents the expected external
+layout.
 
 ## Licensing
 
