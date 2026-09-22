@@ -1,0 +1,54 @@
+name: ci
+
+# No real research data ever reaches CI. Every test builds its own synthetic
+# audio, video and transcripts inside the test run.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python 3.11
+        run: uv python install 3.11
+
+      - name: Sync dependencies (locked)
+        run: uv sync --all-groups --frozen
+
+      - name: Lint
+        run: |
+          uv run ruff check src tests scripts
+          uv run ruff format --check src tests scripts
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Test
+        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: ignore

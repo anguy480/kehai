@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# Clinical research data must never enter this repository.
+# Raw media, audio, transcripts and feature tables live outside the repo under
+# $VC_DATA_ROOT / $VC_WORK_ROOT / $VC_OUT_ROOT. These rules are a second line
+# of defence in case anything is ever copied in by accident.
+# ---------------------------------------------------------------------------
+
+# Video / audio
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.m4a
+*.wav
+*.mp3
+*.flac
+*.aac
+*.ogg
+*.opus
+
+# Transcripts and diarization output (most sensitive artifact)
+*.srt
+*.vtt
+*.ass
+*.rttm
+*.transcript
+*.transcript.txt
+*_speaker.txt
+*_diarized*.txt
+
+# Feature tables, intermediates, per-frame data
+features*.csv
+inventory*.csv
+qc_report*.csv
+segments*.parquet
+*.npy
+*.npz
+
+# Data and output trees, if ever created inside the repo by mistake
+data/
+outputs/
+work/
+previews/
+handoff/
+logs/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.secrets.baseline.local
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

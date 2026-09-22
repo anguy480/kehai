@@ -1,0 +1,54 @@
+# Run `make setup` once, which installs these hooks.
+default_language_version:
+  python: python3.11
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: check-added-large-files
+        # Nothing legitimate in this repo is large. Media would be far bigger.
+        args: ["--maxkb=512"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.4
+    hooks:
+      - id: ruff-check
+        args: ["--fix"]
+      - id: ruff-format
+
+  # mypy runs as a local hook through `uv run` rather than from the mirror, so
+  # that it type checks against the project's real, locked dependencies and
+  # gives byte-identical results to `make typecheck` and CI. The mirror would
+  # need every runtime dependency duplicated as additional_dependencies.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (strict, src/)
+        entry: uv run mypy
+        language: system
+        pass_filenames: false
+        types: [python]
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+
+  # Local hook: the data-safety net. See scripts/block_media_files.py.
+  - repo: local
+    hooks:
+      - id: block-media-files
+        name: block media, transcripts and feature tables
+        entry: python scripts/block_media_files.py
+        language: system
+        pass_filenames: true
+        always_run: false
