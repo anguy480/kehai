@@ -6,6 +6,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `vc inventory` crashed with `KeyError: 'session_id'` when an unrelated file
+  was already at the output path (a headerless CSV from a manual ffprobe loop).
+  The merge path assumed any existing file was one this pipeline wrote. It is
+  now validated against the inventory schema first, before any probing, so an
+  unusable file fails in a second rather than after 62 ffprobe calls. Without
+  `--force` the run stops and explains how to resolve it, leaving the file
+  untouched; with `--force` the file is moved aside to
+  `inventory.csv.bak-<timestamp>` rather than overwritten.
+- Inventory dtype coercion is now shared between building a table and reading
+  one back. A CSV round-trip returns a nullable `Int64` column as `int64` and an
+  entirely missing column as `object`, so a table this pipeline wrote failed its
+  own contract on the next run. Boolean columns are parsed rather than cast,
+  since `astype(bool)` maps the string `"False"` to `True`.
+
 ### Added
 
 - Project skeleton: `src` layout, `pyproject.toml`, uv with a committed

@@ -217,3 +217,42 @@ def test_force_recomputes_previews(roots: DataRoots, make_real_media: Any):
     _run("preview")
     result = _run("--force", "preview")
     assert "1 ok, 0 skipped" in result.output
+
+
+# ---------------------------------------------------------------------------
+# a pre-existing file at the output path
+# ---------------------------------------------------------------------------
+@pytest.mark.slow
+def test_an_unrecognised_inventory_file_is_a_clean_setup_error(
+    roots: DataRoots, make_real_media: Any
+):
+    """Reported as a crash: KeyError from a headerless CSV left in $VC_OUT_ROOT."""
+    make_real_media(28)
+    planted = roots.out / "inventory.csv"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_text("28,640.5,1920,1080\n", encoding="utf-8")
+
+    result = _run("inventory")
+
+    assert result.exit_code == EXIT_SETUP_ERROR
+    assert "KeyError" not in result.output
+    assert "Traceback" not in result.output
+    assert "Move or delete" in result.output
+    assert "--force" in result.output
+    assert planted.read_text(encoding="utf-8") == "28,640.5,1920,1080\n"
+
+
+@pytest.mark.slow
+def test_force_moves_the_unrecognised_file_aside(roots: DataRoots, make_real_media: Any):
+    make_real_media(28)
+    planted = roots.out / "inventory.csv"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_text("28,640.5,1920,1080\n", encoding="utf-8")
+
+    result = _run("--force", "inventory")
+
+    assert result.exit_code == 0
+    assert "moved an unrecognised" in result.output
+    backups = list(roots.out.glob("inventory.csv.bak-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "28,640.5,1920,1080\n"

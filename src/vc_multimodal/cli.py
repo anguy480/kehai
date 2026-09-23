@@ -19,6 +19,7 @@ import typer
 
 from vc_multimodal import __version__
 from vc_multimodal.config import DEFAULT_CONFIG_PATH, AppConfig, ConfigError, load_config
+from vc_multimodal.contracts import ContractError
 from vc_multimodal.ffmpeg import FfmpegError, FfmpegTools
 from vc_multimodal.logging_setup import configure_logging, log_file_path
 from vc_multimodal.paths import (
@@ -252,14 +253,18 @@ def inventory(ctx: typer.Context) -> None:
     """Probe every recording with ffprobe and write inventory.csv."""
     setup = _setup(ctx, inventory_stage.STAGE)
 
-    result = inventory_stage.run(
-        setup.config,
-        setup.roots,
-        session_ids=setup.session_ids,
-        workers=setup.workers,
-        force=setup.force,
-        tools=setup.tools,
-    )
+    try:
+        result = inventory_stage.run(
+            setup.config,
+            setup.roots,
+            session_ids=setup.session_ids,
+            workers=setup.workers,
+            force=setup.force,
+            tools=setup.tools,
+        )
+    except (inventory_stage.ExistingInventoryError, ContractError) as exc:
+        _fail(str(exc))
+        return
 
     typer.echo(f"\nwrote {result.path}")
     typer.echo("")

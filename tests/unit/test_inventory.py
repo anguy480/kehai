@@ -11,7 +11,8 @@ import pytest
 from tests.conftest import SUMMER_FOLDER, WINTER_FOLDER, place_fake_media
 from vc_multimodal.config import AppConfig, DurationChecks, load_config
 from vc_multimodal.contracts import INVENTORY_SCHEMA, validate
-from vc_multimodal.ffmpeg import AudioStreamInfo, MediaInfo
+from vc_multimodal.ffmpeg import AudioStreamInfo, FfmpegTools, MediaInfo
+from vc_multimodal.io_utils import write_csv
 from vc_multimodal.paths import DataRoots, RawSession
 from vc_multimodal.stages import inventory as stage
 
@@ -344,3 +345,198 @@ def test_duration_outliers_are_flagged_across_a_cohort(roots: DataRoots, make_re
     assert stage.FLAG_SHORT in flags[210]
     assert stage.FLAG_KNOWN_SHORT in flags[210]
     assert flags[28] == ""
+
+
+# ---------------------------------------------------------------------------
+# a pre-existing file at the output path
+#
+# $VC_OUT_ROOT is a directory the user also works in by hand, so a file being
+# at the inventory path does not mean this pipeline wrote it. Merging into one
+# crashed with KeyError: 'session_id' when a headerless CSV from a manual
+# ffprobe loop was already there.
+# ---------------------------------------------------------------------------
+HEADERLESS_CSV = "28,640.5,1920,1080\n3,612.2,1920,1080\n"
+
+
+def _plant(roots: DataRoots, content: str | bytes) -> Path:
+    target = stage.inventory_path(roots)
+    if isinstance(content, bytes):
+        target.write_bytes(content)
+    else:
+        target.write_text(content, encoding="utf-8")
+    return target
+
+
+@pytest.mark.parametrize(
+    ("label", "content"),
+    [
+        ("headerless csv from a manual ffprobe loop", HEADERLESS_CSV),
+        ("a csv with unrelated columns", "file,length\n28.mp4,640.5\n"),
+        ("an empty file", ""),
+        ("not a csv at all", "just some notes about the recordings\n"),
+        ("binary rubbish", b"\x00\x01\x02\xff\xfe"),
+    ],
+)
+def test_an_unrecognised_file_at_the_output_path_is_rejected(
+    roots: DataRoots, label: str, content: str | bytes
+):
+    target = _plant(roots, content)
+    with pytest.raises(stage.ExistingInventoryError):
+        stage.read_existing(target)
+
+
+def test_the_rejection_explains_what_to_do(roots: DataRoots):
+    target = _plant(roots, HEADERLESS_CSV)
+    with pytest.raises(stage.ExistingInventoryError) as caught:
+        stage.read_existing(target)
+
+    message = str(caught.value)
+    assert str(target) in message
+    assert "Move or delete" in message
+    assert "--force" in message
+    assert "inventory.csv.bak-" in message
+    # A plain reason, not a schema dump.
+    assert "missing 17 required one(s)" in message
+    assert "session_id" in message
+
+
+def test_the_rejection_does_not_quote_the_other_file_s_values(roots: DataRoots):
+    """Those headers are data values; a manual loop over real sessions is likely."""
+    target = _plant(roots, HEADERLESS_CSV)
+    with pytest.raises(stage.ExistingInventoryError) as caught:
+        stage.read_existing(target)
+
+    message = str(caught.value)
+    assert "640.5" not in message
+    assert "612.2" not in message
+
+
+def test_a_table_we_wrote_survives_a_csv_round_trip(roots: DataRoots, default_config: AppConfig):
+    """CSV loses dtypes: Int64 returns as int64 and empty columns as object."""
+    frame = stage.build_frame([stage._row(_session(28), _info(), None)])
+    target = stage.inventory_path(roots)
+    write_csv(target, frame)
+
+    restored = stage.read_existing(target)
+    assert str(restored["size_bytes"].dtype) == "Int64"
+    assert str(restored["duration_s"].dtype) == "float64"
+    assert restored["readable"].dtype == bool
+
+
+def test_an_all_unreadable_table_also_survives_a_round_trip(roots: DataRoots):
+    rows = [stage._row(_session(i), None, "boom") for i in (1, 2)]
+    target = stage.inventory_path(roots)
+    write_csv(target, stage.build_frame(rows))
+
+    restored = stage.read_existing(target)
+    assert not restored["readable"].any()
+    assert str(restored["width"].dtype) == "Int64"
+
+
+def test_a_false_boolean_does_not_become_true_through_text(roots: DataRoots):
+    """`astype(bool)` maps the string "False" to True, which would invert a flag."""
+    frame = stage.build_frame([stage._row(_session(28), _info(fps_variable=False), None)])
+    target = stage.inventory_path(roots)
+    write_csv(target, frame)
+    assert not stage.read_existing(target).loc[0, "fps_variable"]
+
+
+def test_a_table_we_wrote_is_recognised(roots: DataRoots, default_config: AppConfig):
+    frame = stage.build_frame([stage._row(_session(28), _info(), None)])
+    target = stage.inventory_path(roots)
+    write_csv(target, frame)
+
+    assert stage.is_existing_inventory(target)
+    assert list(stage.read_existing(target)["session_id"]) == [28]
+
+
+def test_a_table_with_our_columns_but_bad_values_is_rejected(roots: DataRoots):
+    frame = stage.build_frame([stage._row(_session(28), _info(), None)])
+    frame["duration_s"] = -5.0
+    write_csv(stage.inventory_path(roots), frame)
+
+    with pytest.raises(stage.ExistingInventoryError, match="cannot be merged"):
+        stage.read_existing(stage.inventory_path(roots))
+
+
+def test_backup_paths_are_timestamped_beside_the_original(roots: DataRoots):
+    target = stage.inventory_path(roots)
+    backup = stage.backup_path(target, stamp="20260923T010203Z")
+    assert backup.parent == target.parent
+    assert backup.name == "inventory.csv.bak-20260923T010203Z"
+
+
+@pytest.mark.slow
+def test_run_refuses_to_merge_into_an_unrecognised_file(
+    roots: DataRoots, default_config: AppConfig, make_real_media: Any
+):
+    make_real_media(28)
+    target = _plant(roots, HEADERLESS_CSV)
+
+    with pytest.raises(stage.ExistingInventoryError):
+        stage.run(default_config, roots, workers=1)
+
+    # The user's file is left exactly as it was.
+    assert target.read_text(encoding="utf-8") == HEADERLESS_CSV
+
+
+@pytest.mark.slow
+def test_the_refusal_happens_before_any_probing(
+    roots: DataRoots, default_config: AppConfig, make_real_media: Any, ffprobe_bin: str
+):
+    """Failing after 62 ffprobe calls would waste minutes for nothing."""
+    make_real_media(28)
+    _plant(roots, HEADERLESS_CSV)
+
+    class RefusingTools(FfmpegTools):
+        def probe(self, media: Path) -> dict[str, Any]:
+            msg = "probe must not be called before the existing file is checked"
+            raise AssertionError(msg)
+
+    tools = RefusingTools(ffmpeg=Path(ffprobe_bin), ffprobe=Path(ffprobe_bin))
+    with pytest.raises(stage.ExistingInventoryError):
+        stage.run(default_config, roots, workers=1, tools=tools)
+
+
+@pytest.mark.slow
+def test_force_moves_an_unrecognised_file_aside_rather_than_overwriting_it(
+    roots: DataRoots, default_config: AppConfig, make_real_media: Any
+):
+    make_real_media(28)
+    target = _plant(roots, HEADERLESS_CSV)
+
+    result = stage.run(default_config, roots, workers=1, force=True)
+
+    backups = sorted(roots.out.glob("inventory.csv.bak-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == HEADERLESS_CSV
+    assert list(result.frame["session_id"]) == [28]
+    assert target.exists()
+    assert any("moved an unrecognised" in note for note in result.report.notes)
+
+
+@pytest.mark.slow
+def test_force_does_not_back_up_a_table_we_wrote(
+    roots: DataRoots, default_config: AppConfig, make_real_media: Any
+):
+    """Our own table is regenerable, so forcing over it needs no backup."""
+    make_real_media(28)
+    stage.run(default_config, roots, workers=1)
+
+    stage.run(default_config, roots, workers=1, force=True)
+
+    assert list(roots.out.glob("inventory.csv.bak-*")) == []
+
+
+@pytest.mark.slow
+def test_a_merge_into_our_own_table_still_works(
+    roots: DataRoots, default_config: AppConfig, make_real_media: Any
+):
+    """The regression fix must not break the merge it was guarding."""
+    make_real_media(28)
+    make_real_media(3, folder="January 17 2026")
+    stage.run(default_config, roots, workers=1)
+
+    result = stage.run(default_config, roots, session_ids=[28], workers=1)
+
+    assert sorted(result.frame["session_id"]) == [3, 28]
