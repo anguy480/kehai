@@ -33,7 +33,11 @@ dependencies = [
   # cv2 comes from mediapipe, which requires opencv-contrib-python. Do not add
   # opencv-python or -headless as well: they install into the same `cv2`
   # namespace and whichever lands last silently wins.
-  "mediapipe>=0.10.14",
+  # Pinned below 1.0: mediapipe 1.0.1 aborts the process on macOS arm64
+  # inside the face detector subgraph ("DrishtiMetalHelper ... Service is
+  # unavailable"), with or without the CPU delegate. 0.10.x runs and returns
+  # all 52 blendshapes. Revisit when upstream fixes it.
+  "mediapipe>=0.10.14,<1.0",
   # modeling
   "scikit-learn>=1.5",
   "scipy>=1.13",

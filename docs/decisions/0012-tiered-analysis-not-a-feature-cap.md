@@ -63,9 +63,11 @@ good for.
   against the text baseline. Not 32.
 * Each primary test reports R², MAE and Spearman with a permutation null, and
   **Holm correction across the four**, with the family of tests stated.
-* The face families' three features each are fixed when `vc face` lands, and
-  therefore still before any label is seen. The manifest records the commit,
-  so the ordering is verifiable rather than asserted.
+* The face families' three features each are now fixed, in
+  [ADR 13](0013-face-features-follow-the-lab-precedent.md), from the AUs the
+  lab's own published study found predictive of social performance. Still
+  before any label was seen; the manifest records the commit, so the ordering
+  is verifiable rather than asserted.
 
 The initial primary features, and why each:
 

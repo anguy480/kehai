@@ -321,24 +321,57 @@ face:
   min_confidence: 0.50             # drop lower-confidence frames
   max_dropped_fraction: 0.40       # above this, flag the session in QC
 
+  # The action units are the lab's house set, not a set chosen here: AU01,
+  # AU02, AU04, AU06 and AU12, extracted with OpenFace in Tanaka et al. 2025
+  # (JMIR Form Res 9:e59261). Miyamoto et al. 2025 (Acta Psychologica 254:
+  # 104782) found expressivity in AU01, AU06 and AU12 positively associated
+  # with social performance, which is why those three are the confirmatory
+  # features in model.tiers. See docs/decisions/0013.
+  #
+  # Features are named by AU (face_speaking__au12_mean). MediaPipe blendshape
+  # scores are NOT AU intensities: same construct, different scale, so values
+  # from the two backends must never be pooled. The backend is recorded per
+  # session and in the manifest.
+  action_units:
+    - key: "au01"
+      description: "inner brow raiser"
+      blendshapes: ["browInnerUp"]
+      openface_column: "AU01_r"
+    - key: "au02"
+      description: "outer brow raiser"
+      blendshapes: ["browOuterUpLeft", "browOuterUpRight"]
+      openface_column: "AU02_r"
+    - key: "au04"
+      description: "brow lowerer"
+      blendshapes: ["browDownLeft", "browDownRight"]
+      openface_column: "AU04_r"
+    - key: "au06"
+      description: "cheek raiser"
+      blendshapes: ["cheekSquintLeft", "cheekSquintRight"]
+      openface_column: "AU06_r"
+    - key: "au12"
+      description: "lip corner puller"
+      blendshapes: ["mouthSmileLeft", "mouthSmileRight"]
+      openface_column: "AU12_r"
+
+  # Not an expression feature: the mouth-movement cross-check in
+  # docs/decisions/0008 correlates this against each speaker's timeline.
+  jaw_blendshape: "jawOpen"
+  # Tracking quality, not an expression feature.
+  blink_blendshapes: ["eyeBlinkLeft", "eyeBlinkRight"]
+
   mediapipe:
     # Model asset is downloaded once into $VC_WORK_ROOT/models and its version
     # is recorded in the manifest. No frames are ever written or displayed.
     model_asset: "face_landmarker.task"
     model_url: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
-    model_sha256: null             # pin after first download
-    # A deliberately small subset: expression channels plus jaw opening, which
-    # the speaker cross-check also uses. Keeping this short protects the
-    # feature budget.
-    blendshapes:
-      - "jawOpen"
-      - "mouthSmileLeft"
-      - "mouthSmileRight"
-      - "browInnerUp"
-      - "browDownLeft"
-      - "browDownRight"
-      - "eyeBlinkLeft"
-      - "eyeBlinkRight"
+    # Pinned: verified to emit all 52 blendshapes, including every one the
+    # configured action units need.
+    # pragma: allowlist secret - a public model checksum, not a credential
+    model_sha256: "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"  # pragma: allowlist secret
+    # Head pose is extracted and reported as head pose. It is NOT gaze: the
+    # precedent's gaze findings rest on Tobii eye tracking, which these
+    # recordings do not have. See docs/decisions/0013.
     head_pose: true
 
   openface:
@@ -409,10 +442,19 @@ model:
         - "prosody__f0_semitone_sd"
         - "prosody__speech_rate_proxy"
         - "prosody__intensity_sd_db"
-      # Fixed when `vc face` lands, and therefore still before any label is
-      # seen. Left empty rather than guessed at now.
-      face_speaking: []
-      face_listening: []
+      # The three AUs Miyamoto et al. 2025 found positively associated with
+      # social performance: inner brow raiser, cheek raiser, lip corner
+      # puller. Same three in both windows, so the speaking/listening
+      # contrast is not confounded with a change of measure.
+      # See docs/decisions/0013.
+      face_speaking:
+        - "face_speaking__au12_mean"
+        - "face_speaking__au06_mean"
+        - "face_speaking__au01_mean"
+      face_listening:
+        - "face_listening__au12_mean"
+        - "face_listening__au06_mean"
+        - "face_listening__au01_mean"
 
     # The confirmatory tests: for each target, the new modalities against the
     # text baseline. Four tests in total, not thirty-two.

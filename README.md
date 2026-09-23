@@ -259,6 +259,26 @@ Tracked here until resolved; each is configurable rather than guessed.
 - **Text features from the manuscript.** Requested. `vc model` joins them by
   `session_id` when supplied; the comparison runs without them otherwise.
 
+## Relationship to the lab's prior work
+
+The facial features are not chosen here. They follow the lab's own published
+study of the same construct with the same house pipeline
+([ADR 13](docs/decisions/0013-face-features-follow-the-lab-precedent.md)):
+
+- **Miyamoto et al. (2025)**, *Acta Psychologica* 254:104782, found that lower
+  intensity in the inner brow raiser (AU01), cheek raiser (AU06) and lip corner
+  puller (AU12) went with lower social performance. Those three are the
+  confirmatory facial features here.
+- **Tanaka et al. (2025)**, *JMIR Formative Research* 9:e59261, extracted AU01,
+  AU02, AU04, AU06 and AU12 with OpenFace. That is the set extracted here, so
+  the comparison is direct.
+
+One channel of that precedent **cannot** be replicated. Its gaze findings rest
+on Tobii eye tracking; these are Zoom recordings with no eye tracker, and head
+pose is not gaze. Head pose is extracted and reported as head pose, and the
+absence of the gaze channel has to be stated rather than read as a negative
+result.
+
 ## How the analysis is kept defensible at N=62
 
 Sixty-two participants is a small sample, and the feature table will hold

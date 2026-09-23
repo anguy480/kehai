@@ -21,6 +21,21 @@ A pluggable face backend with two implementations:
 Aggregation consumes a common per-frame representation, so the choice of backend
 does not change the shape of the feature table.
 
+## Version pin
+
+MediaPipe is pinned below 1.0. Version 1.0.1 aborts the process on macOS arm64
+inside the face detector subgraph (`DrishtiMetalHelper ... Check failed:
+service_ Service is unavailable`), with or without an explicit CPU delegate. It
+is a hard abort, not an exception, so it cannot be caught and handled. 0.10.x
+runs and returns all 52 blendshapes. The model asset's SHA-256 is pinned in
+config and was verified to contain every blendshape the configured action units
+need.
+
+That MediaPipe is the fragile half of this pair, while OpenFace is the lab's
+own house pipeline, strengthens the case for the importer being a first-class
+path rather than a fallback. See
+[ADR 13](0013-face-features-follow-the-lab-precedent.md).
+
 ## Consequences
 
 - Development is unblocked on the development machine.

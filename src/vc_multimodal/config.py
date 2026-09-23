@@ -522,13 +522,42 @@ class ProsodyConfig(_Base):
         return self
 
 
+class ActionUnitConfig(_Base):
+    """One facial action unit, and how each backend measures it.
+
+    Features are named by AU so they line up with the literature and with the
+    lab's own OpenFace output (docs/decisions/0013). The two backends measure
+    the same AU on different scales, so a value from one is not comparable with
+    a value from the other; the backend used is recorded per session.
+    """
+
+    # Feature-name stem, e.g. "au12". Lower case, since feature names are.
+    key: str
+    # What the AU is, for the feature dictionary.
+    description: str
+    # MediaPipe blendshape categories averaged to stand in for this AU. More
+    # than one where the blendshape is split left and right.
+    blendshapes: tuple[str, ...]
+    # The OpenFace column, for the importer.
+    openface_column: str
+
+    @model_validator(mode="after")
+    def _key_must_suit_a_feature_name(self) -> Self:
+        if not self.key.islower() or not self.key.isalnum():
+            msg = f"action unit key {self.key!r} must be lower-case alphanumeric"
+            raise ValueError(msg)
+        if not self.blendshapes:
+            msg = f"action unit {self.key!r} needs at least one blendshape"
+            raise ValueError(msg)
+        return self
+
+
 class MediaPipeConfig(_Base):
     """MediaPipe Face Landmarker settings and the pinned model asset."""
 
     model_asset: str
     model_url: str
     model_sha256: str | None
-    blendshapes: tuple[str, ...]
     head_pose: bool
 
 
@@ -547,8 +576,45 @@ class FaceConfig(_Base):
     sample_fps: float = Field(gt=0.0)
     min_confidence: float = Field(ge=0.0, le=1.0)
     max_dropped_fraction: float = Field(ge=0.0, le=1.0)
+    # The action units to extract, in the order they appear in the feature
+    # table. Taken from the lab's house pipeline rather than chosen here.
+    action_units: tuple[ActionUnitConfig, ...]
+    # Jaw opening, used by the mouth-movement cross-check in ADR 8 rather than
+    # as an expression feature.
+    jaw_blendshape: str
+    # Tracking-quality signal, not an expression feature.
+    blink_blendshapes: tuple[str, ...]
     mediapipe: MediaPipeConfig
     openface: OpenFaceConfig
+
+    @model_validator(mode="after")
+    def _action_units_must_be_distinct(self) -> Self:
+        keys = [unit.key for unit in self.action_units]
+        duplicated = sorted({key for key in keys if keys.count(key) > 1})
+        if duplicated:
+            msg = f"duplicate action unit key(s): {duplicated}"
+            raise ValueError(msg)
+        if not self.action_units:
+            msg = "at least one action unit must be configured"
+            raise ValueError(msg)
+        return self
+
+    @property
+    def unit_keys(self) -> tuple[str, ...]:
+        """The AU keys, in configured order."""
+        return tuple(unit.key for unit in self.action_units)
+
+    def unit(self, key: str) -> ActionUnitConfig | None:
+        """The configuration for one AU key, or None."""
+        return next((unit for unit in self.action_units if unit.key == key), None)
+
+    @property
+    def required_blendshapes(self) -> tuple[str, ...]:
+        """Every blendshape the configured AUs, jaw and blink need."""
+        needed = [shape for unit in self.action_units for shape in unit.blendshapes]
+        needed.append(self.jaw_blendshape)
+        needed.extend(self.blink_blendshapes)
+        return tuple(dict.fromkeys(needed))
 
 
 class AggregateConfig(_Base):

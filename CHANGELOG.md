@@ -63,6 +63,25 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The facial features follow the lab's own published precedent rather than
+  being chosen here (docs/decisions/0013). The action units are the house set
+  used in Tanaka et al. 2025 (JMIR Form Res 9:e59261) - AU01, AU02, AU04, AU06
+  and AU12 - and the confirmatory features are the three that Miyamoto et al.
+  2025 (Acta Psychologica 254:104782) found positively associated with social
+  performance: AU01, AU06 and AU12, in both the speaking and listening
+  windows. Features are named by AU so they line up with the literature and
+  with OpenFace, with the backend recorded per session because MediaPipe
+  blendshape scores are not AU intensities.
+- The previous blendshape list could not measure AU02 or AU06. AU06 is one of
+  the three the precedent found predictive, so that was a silent gap in the
+  planned feature set.
+- `mediapipe` pinned below 1.0: 1.0.1 aborts the process on macOS arm64 inside
+  the face detector subgraph, with or without an explicit CPU delegate. It is a
+  hard abort rather than an exception, so it cannot be handled. 0.10.x runs and
+  returns all 52 blendshapes.
+- The face landmarker model asset is pinned by SHA-256, verified to emit every
+  blendshape the configured action units need.
+
 - The feature budget is enforced by tiering rather than by a hard cap
   (docs/decisions/0012). `aggregate.max_features` is now a sanity ceiling
   against a bug generating hundreds of columns; what makes the analysis

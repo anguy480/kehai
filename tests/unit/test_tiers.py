@@ -44,12 +44,8 @@ def test_the_primary_features_exist_in_the_stages_that_produce_them(
 def test_the_confirmatory_set_is_small_relative_to_the_sample(
     default_config: AppConfig,
 ):
-    """62 observations. Twelve primary features is about five per feature."""
-    tiers = default_config.model.tiers
-    fixed = len(tiers.primary_columns)
-    awaiting = len(tiers.families_awaiting_primaries)
-    # Three per family once face lands, so at most twelve.
-    assert fixed + 3 * awaiting <= 12
+    """62 observations and twelve primary features: about five per feature."""
+    assert len(default_config.model.tiers.primary_columns) == 12
 
 
 def test_the_confirmatory_tests_are_far_fewer_than_the_estimates(
@@ -61,12 +57,18 @@ def test_the_confirmatory_tests_are_far_fewer_than_the_estimates(
     assert plan.n_exploratory_estimates == 28
 
 
-def test_face_primaries_are_left_unfixed_rather_than_guessed(
-    default_config: AppConfig,
-):
-    """They are named when `vc face` lands, still before any label is seen."""
-    awaiting = default_config.model.tiers.families_awaiting_primaries
-    assert set(awaiting) == {"face_speaking", "face_listening"}
+def test_every_family_now_has_its_primaries_fixed(default_config: AppConfig):
+    """The face families were filled in from the lab's own published findings
+    (docs/decisions/0013), still before any label was seen."""
+    tiers = default_config.model.tiers
+    assert tiers.families_awaiting_primaries == ()
+    assert set(tiers.primary_features) == {
+        "turns",
+        "prosody",
+        "face_speaking",
+        "face_listening",
+    }
+    assert all(len(features) == 3 for features in tiers.primary_features.values())
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +88,20 @@ def test_every_feature_lands_in_exactly_one_tier(default_config: AppConfig):
     plan = resolve_tiers(BUILT_COLUMNS, default_config.model)
     features = {*TURN_FEATURES, *PROSODY_FEATURES}
     assert set(plan.primary) | set(plan.exploratory) == features
+
+
+def test_the_face_primaries_show_as_missing_until_the_stage_produces_them(
+    default_config: AppConfig,
+):
+    """`vc face` is not built yet, so the columns it will write do not exist.
+
+    They are reported as missing rather than quietly ignored, which is the
+    same mechanism that would catch a pre-registered feature disappearing.
+    """
+    plan = resolve_tiers(BUILT_COLUMNS, default_config.model)
+    assert all(name.startswith("face_") for name in plan.missing)
+    assert len(plan.missing) == 6
+    assert not plan.is_complete
 
 
 def test_a_missing_primary_feature_is_reported_not_dropped(default_config: AppConfig):
@@ -136,11 +152,27 @@ def test_the_report_names_the_confirmatory_comparisons(default_config: AppConfig
     assert "new_modalities_vs_text: all vs text" in text
 
 
-def test_the_report_flags_unfixed_families(default_config: AppConfig):
-    plan = resolve_tiers(BUILT_COLUMNS, default_config.model)
-    text = "\n".join(describe_plan(plan, default_config.model))
+def test_the_report_flags_a_family_whose_primaries_are_unfixed():
+    """The shipped config has none, so the mechanism is exercised directly."""
+    config = load_config(
+        DEFAULT,
+        overrides={
+            "model.tiers.primary_features": {
+                "turns": ["turns__latency_median"],
+                "face_speaking": [],
+            }
+        },
+    )
+    plan = resolve_tiers(BUILT_COLUMNS, config.model)
+    text = "\n".join(describe_plan(plan, config.model))
     assert "NOT YET FIXED" in text
     assert "face_speaking" in text
+
+
+def test_the_shipped_config_has_nothing_awaiting(default_config: AppConfig):
+    plan = resolve_tiers(BUILT_COLUMNS, default_config.model)
+    assert plan.awaiting == ()
+    assert "NOT YET FIXED" not in "\n".join(describe_plan(plan, default_config.model))
 
 
 def test_the_report_flags_a_missing_primary_feature(default_config: AppConfig):
