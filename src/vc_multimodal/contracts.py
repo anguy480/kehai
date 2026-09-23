@@ -205,6 +205,9 @@ LAYOUT_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
         "assumed_side": pa.Column(str, pa.Check.isin(SIDES), nullable=False),
         # Null where OCR reached no conclusion, so there was nothing to compare.
         "matches_assumed": pa.Column("boolean", nullable=True),
+        # Opaque cohort-local key of the recurring label that settled this
+        # session, e.g. "PSY_A". An ordinal, not derived from the text.
+        "recurring_label_key": pa.Column(str, nullable=True),
         "n_labels_left": pa.Column("Int64", pa.Check.ge(0), nullable=True),
         "n_labels_right": pa.Column("Int64", pa.Check.ge(0), nullable=True),
         "best_confidence": pa.Column(float, pa.Check.in_range(0.0, 1.0), nullable=True),

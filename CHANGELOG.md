@@ -103,6 +103,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the rates that do, rather than silently rounded: 10 fps at 25 fps native
   alternates 2- and 3-frame steps, and uneven spacing distorts anything derived
   from differences between frames with nothing to notice.
+- `layout.csv` records `recurring_label_key`: which recurring speaker settled
+  each session, as a cohort-local ordinal (`PSY_A`, `PSY_B`) that is not
+  derived from the label text in any way, not even by hashing. The summary
+  cross-tabulates it against recruitment wave and says whether the split is
+  clean by wave, which decides how many psychiatrist reference clips are needed
+  and which sessions each covers.
 - `vc verify-layout --debug-region`: reports the detected letterbox, tile boxes
   and computed label regions in both fractional and pixel coordinates, with
   observation counts, how many passed the confidence threshold and how many

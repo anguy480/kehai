@@ -793,3 +793,193 @@ def test_letterbox_detection_can_be_switched_off(roots: DataRoots, cohort: list[
     config = load_config(DEFAULT, overrides={"video.letterbox_detection": "off"})
     result = stage.run(config, roots, workers=1, backend=SideScriptedOcr("Dr Sato", "Guest"))
     assert not result.debug["content_detected"].any()
+
+
+# ---------------------------------------------------------------------------
+# opaque keys for the recurring speakers
+#
+# Whether one person ran every session, or one per recruitment wave, decides
+# how many reference clips are needed and which sessions each covers. The
+# answer must be reportable, so the keys are cohort-local ordinals rather than
+# anything derived from the label text.
+# ---------------------------------------------------------------------------
+def test_recurring_labels_get_ordinal_keys_most_widespread_first():
+    per_session = {sid: ("drsato", f"guest{sid:03d}") for sid in range(1, 11)}
+    per_session.update({sid: ("drsuzuki", f"guest{sid:03d}") for sid in range(11, 16)})
+
+    keys = stage.assign_recurring_keys(per_session, min_recurrence=0.2)
+
+    assert keys["drsato"].key == "PSY_A"
+    assert keys["drsato"].n_sessions == 10
+    assert keys["drsuzuki"].key == "PSY_B"
+    assert keys["drsuzuki"].n_sessions == 5
+
+
+def test_the_keys_are_not_derived_from_the_text():
+    """Not even by hashing: an ordinal cannot be turned back into a name."""
+    keys = stage.assign_recurring_keys(
+        dict.fromkeys(range(1, 6), ("verydistinctivename",)), min_recurrence=0.5
+    )
+    assert next(iter(keys.values())).key == "PSY_A"
+    assert "verydistinctive" not in "".join(item.key for item in keys.values())
+
+
+def test_the_key_assignment_is_stable_across_runs():
+    per_session = dict.fromkeys(range(1, 11), ("alpha", "beta"))
+    first = stage.assign_recurring_keys(per_session, min_recurrence=0.5)
+    second = stage.assign_recurring_keys(per_session, min_recurrence=0.5)
+    assert {k: v.key for k, v in first.items()} == {k: v.key for k, v in second.items()}
+
+
+def test_a_tie_is_broken_deterministically():
+    per_session = dict.fromkeys(range(1, 11), ("beta", "alpha"))
+    keys = stage.assign_recurring_keys(per_session, min_recurrence=0.5)
+    assert keys["alpha"].key == "PSY_A"
+    assert keys["beta"].key == "PSY_B"
+
+
+def test_no_recurring_label_yields_no_keys():
+    assert stage.assign_recurring_keys({1: ("a",), 2: ("b",)}, min_recurrence=0.9) == {}
+
+
+def test_the_threshold_is_at_least_two_sessions():
+    assert stage.recurrence_threshold(1, 0.5) == 2
+    assert stage.recurrence_threshold(62, 0.1) == 6
+    assert stage.recurrence_threshold(62, 0.5) == 31
+
+
+def test_the_shipped_threshold_admits_a_speaker_in_a_sixth_of_the_cohort(
+    default_config: AppConfig,
+):
+    """Two psychiatrists were found, one covering only 10 of 62 sessions."""
+    threshold = stage.recurrence_threshold(62, default_config.speakers.label_ocr.min_recurrence)
+    assert threshold <= 10
+    # And still far above a participant, who appears exactly once.
+    assert threshold > 1
+
+
+# ---------------------------------------------------------------------------
+# recording which speaker settled a session
+# ---------------------------------------------------------------------------
+def test_the_decision_records_which_recurring_speaker_settled_it():
+    keys = stage.assign_recurring_keys(
+        {sid: (DOCTOR, f"guest{sid:03d}") for sid in range(1, 11)}, min_recurrence=0.5
+    )
+    decision = stage.decide_side([DOCTOR], [GUEST], recurring=frozenset(keys), keys=keys)
+
+    assert decision.side == stage.SIDE_LEFT
+    assert decision.matched_key == "PSY_A"
+
+
+def test_an_inconclusive_session_records_no_key():
+    decision = stage.decide_side(["a"], ["b"], recurring=frozenset({DOCTOR}))
+    assert decision.matched_key is None
+
+
+def test_explicit_patterns_record_no_key():
+    """A configured pattern is direct knowledge, not a cohort observation."""
+    decision = stage.decide_side([DOCTOR], [GUEST], patterns=["drsato"])
+    assert decision.side == stage.SIDE_LEFT
+    assert decision.matched_key is None
+
+
+def test_the_key_reaches_the_table():
+    keys = stage.assign_recurring_keys(dict.fromkeys(range(1, 11), (DOCTOR,)), min_recurrence=0.5)
+    rows = stage.build_rows(
+        {28: _labels(28, (DOCTOR,), ("guest028",))},
+        {28: "winter"},
+        recurring=frozenset(keys),
+        keys=keys,
+        assumed_side="left",
+    )
+    frame = stage.build_frame(rows)
+    validate(frame, LAYOUT_SCHEMA)
+    assert frame.iloc[0]["recurring_label_key"] == "PSY_A"
+
+
+def test_the_table_still_carries_no_text_with_keys_present():
+    keys = stage.assign_recurring_keys(dict.fromkeys(range(1, 11), (DOCTOR,)), min_recurrence=0.5)
+    rows = stage.build_rows(
+        {28: _labels(28, (DOCTOR,), ("guest028",))},
+        {28: "winter"},
+        recurring=frozenset(keys),
+        keys=keys,
+        assumed_side="left",
+    )
+    dumped = stage.build_frame(rows).to_csv(index=False)
+    assert DOCTOR not in dumped
+    assert "guest028" not in dumped
+
+
+# ---------------------------------------------------------------------------
+# the split report
+# ---------------------------------------------------------------------------
+def _settled(session_id: int, wave: str, key: str | None) -> dict[str, object]:
+    return {
+        "session_id": session_id,
+        "wave": wave,
+        "decided_side": "left",
+        "method": stage.METHOD_OCR if key else stage.METHOD_ASSUMED,
+        "ocr_side": "left" if key else stage.SIDE_INCONCLUSIVE,
+        "assumed_side": "left",
+        "matches_assumed": True if key else None,
+        "recurring_label_key": key,
+        "n_labels_left": 1,
+        "n_labels_right": 1,
+        "best_confidence": 1.0,
+        "flags": "",
+    }
+
+
+def test_the_split_is_reported_per_wave(default_config: AppConfig):
+    frame = stage.build_frame([_settled(1, "winter", "PSY_A"), _settled(102, "summer", "PSY_B")])
+    text = "\n".join(stage.summarise(frame, default_config))
+    assert "recurring speaker per session, by wave" in text
+    assert "PSY_A: 1 session(s)  [winter=1]" in text
+    assert "PSY_B: 1 session(s)  [summer=1]" in text
+
+
+def test_a_clean_split_by_wave_is_called_out(default_config: AppConfig):
+    frame = stage.build_frame(
+        [
+            _settled(1, "winter", "PSY_A"),
+            _settled(2, "winter", "PSY_A"),
+            _settled(102, "summer", "PSY_B"),
+        ]
+    )
+    text = "\n".join(stage.summarise(frame, default_config))
+    assert "clean by wave" in text
+    assert "one reference clip per wave" in text
+
+
+def test_two_speakers_inside_one_wave_is_called_out(default_config: AppConfig):
+    """What the real data shows: summer holds both psychiatrists."""
+    frame = stage.build_frame(
+        [
+            _settled(1, "winter", "PSY_A"),
+            _settled(102, "summer", "PSY_A"),
+            _settled(123, "summer", "PSY_B"),
+        ]
+    )
+    text = "\n".join(stage.summarise(frame, default_config))
+    assert "NOT clean by wave" in text
+    assert "session-to-psychiatrist map" in text
+
+
+def test_a_single_recurring_speaker_is_called_out(default_config: AppConfig):
+    frame = stage.build_frame([_settled(1, "winter", "PSY_A"), _settled(102, "summer", "PSY_A")])
+    text = "\n".join(stage.summarise(frame, default_config))
+    assert "one recurring speaker across every settled session" in text
+
+
+def test_nothing_settled_reports_no_split(default_config: AppConfig):
+    frame = stage.build_frame([_settled(1, "winter", None)])
+    text = "\n".join(stage.summarise(frame, default_config))
+    assert "recurring speaker per session" not in text
+
+
+def test_the_split_report_contains_no_text(default_config: AppConfig):
+    frame = stage.build_frame([_settled(1, "winter", "PSY_A")])
+    text = "\n".join(stage.summarise(frame, default_config))
+    assert DOCTOR not in text
+    assert "guest" not in text

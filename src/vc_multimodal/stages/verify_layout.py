@@ -85,6 +85,7 @@ COLUMN_ORDER: Final = (
     "ocr_side",
     "assumed_side",
     "matches_assumed",
+    "recurring_label_key",
     "n_labels_left",
     "n_labels_right",
     "best_confidence",
@@ -129,6 +130,67 @@ def normalise_label(text: str) -> str:
     return _STRIP_PATTERN.sub("", folded)
 
 
+@dataclass(frozen=True, slots=True)
+class RecurringLabel:
+    """A label that recurs across sessions, identified without being named.
+
+    The key is an ordinal assigned within this run - `PSY_A`, `PSY_B` - ordered
+    by how many sessions the label appears in. It is not derived from the text
+    in any way, not even by hashing, so it can be printed and written freely
+    while still letting sessions be grouped by which recurring speaker they
+    matched.
+    """
+
+    key: str
+    n_sessions: int
+
+
+def recurring_counts(per_session: Mapping[int, Sequence[str]]) -> Counter[str]:
+    """How many sessions each label appears in, counting a label once each."""
+    counts: Counter[str] = Counter()
+    for labels in per_session.values():
+        counts.update(set(labels))
+    return counts
+
+
+def recurrence_threshold(n_sessions: int, min_recurrence: float) -> int:
+    """How many sessions a label must appear in to count as recurring."""
+    return max(_MIN_SESSIONS_FOR_RECURRENCE, round(min_recurrence * n_sessions))
+
+
+def assign_recurring_keys(
+    per_session: Mapping[int, Sequence[str]],
+    *,
+    min_recurrence: float,
+) -> dict[str, RecurringLabel]:
+    """Give each recurring label an opaque key, most widespread first.
+
+    Ordered by session count so the keys are stable for a given cohort, with
+    the label itself as a tie-break so a rerun produces the same assignment.
+
+    Args:
+        per_session: Session ID to the normalised labels seen in it.
+        min_recurrence: Required fraction of sessions, in (0, 1].
+
+    Returns:
+        Normalised label to its key and session count. Empty when no label
+        reaches the threshold.
+    """
+    if not per_session:
+        return {}
+
+    counts = recurring_counts(per_session)
+    threshold = recurrence_threshold(len(per_session), min_recurrence)
+    qualifying = sorted(
+        ((label, count) for label, count in counts.items() if count >= threshold),
+        key=lambda item: (-item[1], item[0]),
+    )
+    return {
+        label: RecurringLabel(key=f"PSY_{chr(ord('A') + index)}", n_sessions=count)
+        for index, (label, count) in enumerate(qualifying)
+    }
+
+
 def find_recurring_labels(
     per_session: Mapping[int, Sequence[str]],
     *,
@@ -147,15 +209,7 @@ def find_recurring_labels(
     Returns:
         The recurring labels, empty if none reaches the threshold.
     """
-    if not per_session:
-        return frozenset()
-
-    counts: Counter[str] = Counter()
-    for labels in per_session.values():
-        counts.update(set(labels))
-
-    threshold = max(2, round(min_recurrence * len(per_session)))
-    return frozenset(label for label, count in counts.items() if count >= threshold)
+    return frozenset(assign_recurring_keys(per_session, min_recurrence=min_recurrence))
 
 
 def matches_any_pattern(label: str, patterns: Sequence[str]) -> bool:
@@ -165,10 +219,13 @@ def matches_any_pattern(label: str, patterns: Sequence[str]) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class SideDecision:
-    """Which side OCR points at, and why."""
+    """Which side OCR points at, why, and which recurring label settled it."""
 
     side: str
     flags: tuple[str, ...] = ()
+    #: Opaque key of the recurring label that identified the psychiatrist, or
+    #: None when nothing matched or explicit patterns were used instead.
+    matched_key: str | None = None
 
 
 def decide_side(
@@ -177,6 +234,7 @@ def decide_side(
     *,
     recurring: frozenset[str] = frozenset(),
     patterns: Sequence[str] = (),
+    keys: Mapping[str, RecurringLabel] | None = None,
 ) -> SideDecision:
     """Decide which side holds the psychiatrist from one session's labels.
 
@@ -190,23 +248,33 @@ def decide_side(
         right_labels: Normalised labels read in the right tile.
         recurring: Labels found to recur across the cohort.
         patterns: Normalised explicit label fragments, if configured.
+        keys: Opaque key per recurring label, so the decision can record which
+            recurring speaker settled it without naming them.
 
     Returns:
-        The side, or `inconclusive`, with any flags raised.
+        The side, or `inconclusive`, with any flags raised and the key of the
+        recurring label that settled it.
     """
     if patterns:
         left_hit = any(matches_any_pattern(label, patterns) for label in left_labels)
         right_hit = any(matches_any_pattern(label, patterns) for label in right_labels)
+        matched_key = None
     else:
-        left_hit = any(label in recurring for label in left_labels)
-        right_hit = any(label in recurring for label in right_labels)
+        left_match = next((label for label in left_labels if label in recurring), None)
+        right_match = next((label for label in right_labels if label in recurring), None)
+        left_hit, right_hit = left_match is not None, right_match is not None
+        matched = left_match or right_match
+        entry = keys.get(matched) if keys is not None and matched is not None else None
+        matched_key = entry.key if entry is not None else None
 
     if left_hit and not right_hit:
-        return SideDecision(SIDE_LEFT)
+        return SideDecision(SIDE_LEFT, matched_key=matched_key)
     if right_hit and not left_hit:
-        return SideDecision(SIDE_RIGHT)
+        return SideDecision(SIDE_RIGHT, matched_key=matched_key)
     if left_hit and right_hit:
-        return SideDecision(SIDE_INCONCLUSIVE, (FLAG_INCONCLUSIVE, FLAG_BOTH_SIDES))
+        return SideDecision(
+            SIDE_INCONCLUSIVE, (FLAG_INCONCLUSIVE, FLAG_BOTH_SIDES), matched_key=matched_key
+        )
     return SideDecision(SIDE_INCONCLUSIVE, (FLAG_INCONCLUSIVE,))
 
 
@@ -647,6 +715,7 @@ def build_rows(
     *,
     recurring: frozenset[str] = frozenset(),
     patterns: Sequence[str] = (),
+    keys: Mapping[str, RecurringLabel] | None = None,
     assumed_side: str,
 ) -> list[Mapping[str, object]]:
     """Turn per-session labels into layout rows.
@@ -660,6 +729,7 @@ def build_rows(
         waves: Session ID to recruitment wave.
         recurring: Labels found to recur across the cohort.
         patterns: Normalised explicit label fragments, if configured.
+        keys: Opaque key per recurring label, recorded per session.
         assumed_side: The fallback side from configuration.
 
     Returns:
@@ -675,7 +745,11 @@ def build_rows(
             decision = SideDecision(SIDE_INCONCLUSIVE, result.flags)
         else:
             decision = decide_side(
-                left.labels, right.labels, recurring=recurring, patterns=patterns
+                left.labels,
+                right.labels,
+                recurring=recurring,
+                patterns=patterns,
+                keys=keys,
             )
 
         decided, method, matches, flags = resolve(decision, assumed_side)
@@ -688,6 +762,7 @@ def build_rows(
                 "ocr_side": decision.side,
                 "assumed_side": assumed_side,
                 "matches_assumed": matches,
+                "recurring_label_key": decision.matched_key,
                 "n_labels_left": len(left.labels),
                 "n_labels_right": len(right.labels),
                 "best_confidence": round(result.best_confidence, 3),
@@ -708,8 +783,50 @@ def build_frame(
         "float64"
     )
     frame["matches_assumed"] = frame["matches_assumed"].astype("boolean")
+    frame["recurring_label_key"] = frame["recurring_label_key"].astype("object")
     frame["flags"] = frame["flags"].fillna("").astype(str)
     return frame.sort_values("session_id", ignore_index=True)
+
+
+def _cohort_notes(
+    label_keys: Mapping[str, RecurringLabel],
+    *,
+    n_sessions: int,
+    usable: bool,
+    patterns: Sequence[str],
+    token_env: str,
+) -> list[str]:
+    """Explain a cohort that could not identify a recurring speaker.
+
+    A bare "inconclusive" reads like an OCR failure, when the cause is often
+    that there was no cohort to compare against.
+    """
+    if patterns:
+        logger.info("%s: using %d explicit label pattern(s)", STAGE, len(patterns))
+        return []
+
+    logger.info(
+        "%s: %d recurring label(s) identified across the cohort: %s",
+        STAGE,
+        len(label_keys),
+        ", ".join(f"{item.key} in {item.n_sessions} session(s)" for item in label_keys.values())
+        or "none",
+    )
+    if not usable:
+        return []
+    if n_sessions < _MIN_SESSIONS_FOR_RECURRENCE:
+        return [
+            f"only {n_sessions} session(s) were read, so no label can be shown to "
+            f"recur; run without --sessions, or set {token_env} to identify the "
+            f"psychiatrist directly"
+        ]
+    if not label_keys:
+        return [
+            "no label recurred across the sessions read, so the psychiatrist could not "
+            "be identified; check speakers.label_ocr.label_region against the previews, "
+            "and `vc verify-layout --debug-region` for where it looked"
+        ]
+    return []
 
 
 def run(
@@ -787,37 +904,25 @@ def run(
 
     # ---- pass 2: cohort decision --------------------------------------
     patterns = explicit_patterns(config)
-    if patterns:
-        logger.info(
-            "%s: using %d explicit label pattern(s) from the environment", STAGE, len(patterns)
-        )
-    recurring = find_recurring_labels(
+    label_keys = assign_recurring_keys(
         {sid: result.all_labels for sid, result in labels.items()},
         min_recurrence=ocr_config.min_recurrence,
     )
-    extra_notes: list[str] = []
-    if not patterns:
-        logger.info("%s: %d recurring label(s) identified across the cohort", STAGE, len(recurring))
-        if usable and len(labels) < _MIN_SESSIONS_FOR_RECURRENCE:
-            # The psychiatrist is identified by their label recurring, which
-            # needs a cohort. Say so rather than reporting a bare
-            # "inconclusive" that looks like an OCR failure.
-            extra_notes.append(
-                f"only {len(labels)} session(s) were read, so no label can be shown to "
-                f"recur; run without --sessions, or set "
-                f"{ocr_config.psychiatrist_label_env} to identify the psychiatrist directly"
-            )
-        elif usable and not recurring:
-            extra_notes.append(
-                "no label recurred across the sessions read, so the psychiatrist could not "
-                "be identified; check speakers.label_ocr.label_region against the previews"
-            )
+    recurring = frozenset(label_keys)
+    extra_notes = _cohort_notes(
+        label_keys,
+        n_sessions=len(labels),
+        usable=usable,
+        patterns=patterns,
+        token_env=ocr_config.psychiatrist_label_env,
+    )
 
     rows = build_rows(
         labels,
         {session.session_id: session.wave for session in selected},
         recurring=recurring,
         patterns=patterns,
+        keys=label_keys,
         assumed_side=config.speakers.assumed_psychiatrist_side,
     )
 
@@ -922,6 +1027,47 @@ def debug_report(observations: Sequence[RegionObservations], config: AppConfig) 
     return lines
 
 
+def _recurring_speaker_lines(frame: pd.DataFrame) -> list[str]:
+    """Cross-tabulate which recurring speaker settled each session, by wave.
+
+    Whether one person ran every session, or one per recruitment wave, decides
+    how many psychiatrist reference clips are needed and which sessions each
+    one covers. The keys are opaque ordinals, so this says nothing about who
+    anyone is.
+    """
+    if "recurring_label_key" not in frame:
+        return []
+    settled = frame.loc[frame["recurring_label_key"].notna()]
+    if settled.empty:
+        return []
+
+    lines = ["", "recurring speaker per session, by wave (opaque keys, not names):"]
+    for key in sorted(set(settled["recurring_label_key"])):
+        rows = settled.loc[settled["recurring_label_key"] == key]
+        by_wave = rows.groupby("wave", dropna=False)["session_id"].count().sort_index()
+        spread = ", ".join(f"{wave}={count}" for wave, count in by_wave.items())
+        lines.append(f"  {key}: {len(rows)} session(s)  [{spread}]")
+        ids = sorted(int(i) for i in rows["session_id"])
+        lines.append(f"    {ids}")
+
+    keys_per_wave = settled.groupby("wave")["recurring_label_key"].nunique()
+    mixed = sorted(str(wave) for wave, n in keys_per_wave.items() if n > 1)
+    if len(set(settled["recurring_label_key"])) == 1:
+        lines.append("  one recurring speaker across every settled session.")
+    elif mixed:
+        lines.append(
+            f"  more than one recurring speaker appears within wave(s) {mixed}, so the "
+            f"split is NOT clean by wave: a session-to-psychiatrist map is needed, not "
+            f"just one clip per wave."
+        )
+    else:
+        lines.append(
+            "  each wave has exactly one recurring speaker, so the split is clean by "
+            "wave: one reference clip per wave covers every settled session."
+        )
+    return lines
+
+
 def summarise(frame: pd.DataFrame, config: AppConfig) -> list[str]:
     """Summarise the layout check: counts and session IDs only, never text."""
     if frame.empty:
@@ -939,6 +1085,8 @@ def summarise(frame: pd.DataFrame, config: AppConfig) -> list[str]:
         ids = sorted(int(i) for i in frame.loc[ocr_side == side, "session_id"])
         label = f"  {side:13s} {len(ids):3d}"
         lines.append(label if not ids else f"{label}  {ids}")
+
+    lines.extend(_recurring_speaker_lines(frame))
 
     conclusive = frame.loc[ocr_side != SIDE_INCONCLUSIVE]
     mismatched = sorted(
