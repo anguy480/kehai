@@ -21,6 +21,7 @@ import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import cv2
 import numpy as np
@@ -219,15 +220,64 @@ def session_waveform(
 
 
 def write_wav(path: Path, samples: np.ndarray, sample_rate: int) -> Path:
-    """Write a mono 16-bit PCM WAV file using only the standard library."""
+    """Write a 16-bit PCM WAV using only the standard library.
+
+    Accepts mono `(n,)` or stereo `(n, 2)` samples, so tests can build the
+    stereo layouts the left/right probe has to tell apart.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    channels = 1 if samples.ndim == 1 else samples.shape[1]
     pcm = np.clip(samples * 32767.0, -32768, 32767).astype("<i2")
     with wave.open(str(path), "wb") as handle:
-        handle.setnchannels(1)
+        handle.setnchannels(channels)
         handle.setsampwidth(2)
         handle.setframerate(sample_rate)
+        # Stereo frames are stored interleaved, which is what C-order gives.
         handle.writeframes(pcm.tobytes())
     return path
+
+
+# How the two speakers are placed across the stereo field.
+#   "mono"       one signal duplicated into both channels: no separation
+#   "per_speaker" psychiatrist hard left, participant hard right: total
+#                 separation, the best case a panned recording could approach
+#   "panned"     each speaker mostly on one side: partial separation, which is
+#                what Zoom panning would actually look like
+StereoLayout = Literal["mono", "per_speaker", "panned"]
+
+# Fraction of a speaker's signal that leaks into the other channel when panned.
+PANNED_BLEED = 0.3
+
+
+def session_stereo(
+    session: SyntheticSession,
+    layout: StereoLayout = "mono",
+    **kwargs: object,
+) -> np.ndarray:
+    """Render a session to a stereo waveform shaped `(n, 2)`.
+
+    Args:
+        session: The session to render.
+        layout: How to place the speakers across the channels.
+        **kwargs: Passed through to `session_waveform`.
+
+    Returns:
+        A two-channel float array.
+    """
+    if layout == "mono":
+        mixed = session_waveform(session, **kwargs)  # type: ignore[arg-type]
+        return np.stack([mixed, mixed], axis=1)
+
+    psychiatrist = session_waveform(session, speakers=[PSYCHIATRIST], **kwargs)  # type: ignore[arg-type]
+    participant = session_waveform(session, speakers=[PARTICIPANT], **kwargs)  # type: ignore[arg-type]
+
+    if layout == "per_speaker":
+        return np.stack([psychiatrist, participant], axis=1)
+
+    bleed = PANNED_BLEED
+    left = (1.0 - bleed) * psychiatrist + bleed * participant
+    right = bleed * psychiatrist + (1.0 - bleed) * participant
+    return np.stack([left, right], axis=1)
 
 
 def write_session_wav(
@@ -363,6 +413,7 @@ def write_session_mp4(
     *,
     tmp_dir: Path,
     per_speaker_audio: bool = False,
+    stereo_layout: StereoLayout | None = None,
     ffmpeg: str = "ffmpeg",
 ) -> Path:
     """Build a complete synthetic recording: video plus audio, muxed to mp4.
@@ -373,6 +424,9 @@ def write_session_mp4(
         tmp_dir: Scratch directory for the intermediate video and WAV files.
         per_speaker_audio: Write one audio stream per speaker instead of a
             single mixed stream.
+        stereo_layout: Render the single stream in stereo with this layout,
+            matching the real recordings, which carry one stereo stream. None
+            writes mono.
         ffmpeg: ffmpeg executable.
 
     Returns:
@@ -385,6 +439,14 @@ def write_session_mp4(
                 tmp_dir / f"{session.session_id}_{speaker}.wav", session, speakers=[speaker]
             )
             for speaker in session.speakers
+        ]
+    elif stereo_layout is not None:
+        streams = [
+            write_wav(
+                tmp_dir / f"{session.session_id}_stereo.wav",
+                session_stereo(session, stereo_layout),
+                session.sample_rate,
+            )
         ]
     else:
         streams = [write_session_wav(tmp_dir / f"{session.session_id}_mixed.wav", session)]

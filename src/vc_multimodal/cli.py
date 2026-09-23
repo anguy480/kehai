@@ -32,6 +32,7 @@ from vc_multimodal.paths import (
     resolve_roots,
 )
 from vc_multimodal.runner import StageReport
+from vc_multimodal.stages import extract_audio as extract_audio_stage
 from vc_multimodal.stages import inventory as inventory_stage
 from vc_multimodal.stages import preview as preview_stage
 from vc_multimodal.stages import verify_layout as verify_layout_stage
@@ -319,6 +320,33 @@ def preview(ctx: typer.Context) -> None:
     )
     typer.echo("")
     _print_report(report)
+
+
+@app.command(name="extract-audio")
+def extract_audio(ctx: typer.Context) -> None:
+    """Extract mono 16 kHz audio, and compare each recording's stereo channels."""
+    setup = _setup(ctx, extract_audio_stage.STAGE)
+
+    try:
+        result = extract_audio_stage.run(
+            setup.config,
+            setup.roots,
+            session_ids=setup.session_ids,
+            workers=setup.workers,
+            force=setup.force,
+            tools=setup.tools,
+        )
+    except ContractError as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo(f"\naudio: {extract_audio_stage.audio_dir(setup.roots)}")
+    typer.echo(f"wrote {result.path}")
+    typer.echo("")
+    for line in extract_audio_stage.summarise(result.frame):
+        typer.echo(line)
+    typer.echo("")
+    _print_report(result.report)
 
 
 @app.command(name="verify-layout")

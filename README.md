@@ -127,7 +127,7 @@ subset.
 | `vc inventory` | ffprobe every mp4; validate count, IDs, readability; flag duration outliers and variable frame rate. |
 | `vc preview` | Write one cropped frame per session for visual confirmation of the participant tile. |
 | `vc verify-layout` | Read the Zoom name label in each tile to check which side the psychiatrist is on, across every session. Reports counts and session IDs only; recognised text is never printed, logged or written. |
-| `vc extract-audio` | Mono 16 kHz WAV per session (one per audio stream). |
+| `vc extract-audio` | Mono 16 kHz WAV per session, and a left/right channel comparison: the one stream is stereo, and any real separation would be a speaker cue that owes nothing to diarization. |
 | `vc diarize` | Pluggable: `import` (existing whisper-diarization output), `pyannote`, or external `whisper-diarization`. |
 | `vc assign-speakers` | Map diarized speakers to psychiatrist/participant via embedding similarity, cross-checked against mouth movement. |
 | `vc vad` | Silero VAD *inside* diarized segments to recover true speech boundaries. |
@@ -151,6 +151,7 @@ uv run vc inventory                         # all sessions, metadata only
 uv run vc --sessions 3,17,28 inventory      # a subset
 uv run vc --sessions 3,17,28 preview        # then look at the sheets yourself
 uv run vc verify-layout                     # all 62: which side is the psychiatrist?
+uv run vc extract-audio                     # mono 16 kHz + the stereo probe
 make pilot                                  # every stage, pilot sessions only
 ```
 
@@ -188,11 +189,14 @@ Tracked here until resolved; each is configurable rather than guessed.
   labels; a disagreement is flagged, not applied. If all 62 come back left the
   assumption is confirmed. See
   [ADR 9](docs/decisions/0009-verify-tile-layout-by-label-ocr.md).
-- **Audio stream layout.** One mixed stream or two; determined per file by
-  `vc inventory`.
+- **Audio stream layout.** *Resolved:* one mixed AAC stream, stereo, 48 kHz, in
+  all 62 recordings, so diarization is required. Whether the stereo channels
+  carry any usable separation is measured by `vc extract-audio`; see
+  [ADR 10](docs/decisions/0010-measure-stereo-channel-separation.md).
 - **Video layout.** Gallery view (psychiatrist left, participant right) is
   expected but not assumed; the participant crop is configurable in fractional
-  coordinates and confirmed by eye via `vc preview`.
+  coordinates and confirmed by eye via `vc preview`. Resolution (1280x720) and
+  frame rate (a constant 25) are confirmed uniform across all 62.
 - **Diarization source.** Reusing the original whisper-diarization output keeps
   the comparison against the manuscript's text features apples-to-apples;
   re-diarizing locally would confound modality with transcript changes. See

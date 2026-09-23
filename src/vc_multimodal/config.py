@@ -249,6 +249,42 @@ class VideoConfig(_Base):
         return self
 
 
+class StereoProbeConfig(_Base):
+    """Thresholds for the left/right channel comparison.
+
+    Every recording carries one mixed stereo stream, and Zoom sometimes pans
+    speakers across the stereo field. Any real separation would be a cheap
+    signal about who is speaking that does not depend on diarization, so the
+    channels are compared rather than assumed to be duplicates.
+    """
+
+    enabled: bool
+    # Amplitude below which a frame counts as silence and is left out of the
+    # correlation. Silence correlates arbitrarily and would swamp a 12-minute
+    # recording.
+    activity_floor: float = Field(gt=0.0, lt=1.0)
+    # At or above this correlation the channels carry the same signal, so there
+    # is no separation to exploit.
+    correlated_above: float = Field(gt=0.0, le=1.0)
+    # Below this correlation the separation is strong enough to be worth using.
+    strong_separation_below: float = Field(ge=-1.0, le=1.0)
+    # Absolute interaural level difference, in dB, worth flagging.
+    imbalance_db: float = Field(gt=0.0)
+    # How much audio to decode at a time. Bounds memory when sessions run in
+    # parallel; it does not affect the results, which are exact either way.
+    chunk_seconds: float = Field(gt=0.0)
+
+    @model_validator(mode="after")
+    def _thresholds_must_be_ordered(self) -> Self:
+        if self.strong_separation_below > self.correlated_above:
+            msg = (
+                f"strong_separation_below={self.strong_separation_below} must not exceed "
+                f"correlated_above={self.correlated_above}"
+            )
+            raise ValueError(msg)
+        return self
+
+
 class AudioConfig(_Base):
     """Audio extraction settings.
 
@@ -259,6 +295,7 @@ class AudioConfig(_Base):
     sample_rate: int = Field(gt=0)
     stream_layout: Literal["auto", "mixed", "per_speaker"]
     codec: str
+    stereo_probe: StereoProbeConfig
 
 
 # ---------------------------------------------------------------------------

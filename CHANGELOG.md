@@ -43,6 +43,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead of quoting values derived from clinical recordings.
 - Atomic output writes and a shared per-session runner with parallelism,
   idempotent skipping and per-session failure isolation.
+- `vc extract-audio`: mono 16 kHz WAV per session, plus a left/right channel
+  comparison measured during the same decode. Every recording carries one mixed
+  stereo stream, so any genuine channel separation would be a speaker cue
+  independent of diarization; if the channels are duplicates, the summary says
+  so plainly rather than leaving later stages to assume separation exists.
+  Statistics are accumulated over chunks, which keeps memory flat on long
+  sessions while remaining numerically exact.
 - `vc doctor`: environment and raw-layout check, including whether label OCR
   is usable.
 - `speakers.assumed_psychiatrist_side` (default `left`), used only as a fallback

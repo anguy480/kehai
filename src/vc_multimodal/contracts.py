@@ -126,6 +126,31 @@ TURN_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
 )
 
 
+AUDIO_QC_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
+    name="audio_qc",
+    strict=True,
+    unique=["session_id"],
+    columns={
+        "session_id": _positive_id(),
+        "wave": pa.Column(str, nullable=False),
+        "sample_rate": pa.Column("Int64", pa.Check.gt(0), nullable=False),
+        "source_channels": pa.Column("Int64", pa.Check.ge(0), nullable=True),
+        "duration_s": pa.Column(float, pa.Check.ge(0.0), nullable=True),
+        "n_samples": pa.Column("Int64", pa.Check.ge(0), nullable=True),
+        "active_fraction": pa.Column(float, pa.Check.in_range(0.0, 1.0), nullable=True),
+        # Null when the recording was mono, or had nothing active to measure.
+        "lr_correlation": pa.Column(float, pa.Check.in_range(-1.0, 1.0), nullable=True),
+        "ild_db": pa.Column(float, nullable=True),
+        "rms_left": pa.Column(float, pa.Check.ge(0.0), nullable=True),
+        "rms_right": pa.Column(float, pa.Check.ge(0.0), nullable=True),
+        "peak_left": pa.Column(float, pa.Check.ge(0.0), nullable=True),
+        "peak_right": pa.Column(float, pa.Check.ge(0.0), nullable=True),
+        "bit_identical": pa.Column("boolean", nullable=True),
+        "flags": pa.Column(str, nullable=False),
+    },
+)
+
+
 LAYOUT_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
     name="layout",
     strict=True,

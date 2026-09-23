@@ -283,3 +283,32 @@ def test_doctor_reports_whether_label_ocr_is_usable(roots: DataRoots, make_real_
     make_real_media(28)
     result = _run("doctor")
     assert "label OCR:" in result.output
+
+
+# ---------------------------------------------------------------------------
+# extract-audio
+# ---------------------------------------------------------------------------
+@pytest.mark.slow
+def test_extract_audio_writes_audio_and_reports_the_channel_comparison(
+    roots: DataRoots, make_real_media: Any
+):
+    make_real_media(28)
+
+    result = _run("extract-audio")
+
+    assert result.exit_code == 0
+    assert (roots.work / "audio" / "28.wav").exists()
+    assert (roots.out / "audio_qc.csv").exists()
+    assert "audio extracted for 1 session(s)" in result.output
+    assert "left/right" in result.output
+
+
+@pytest.mark.slow
+def test_extract_audio_exits_non_zero_when_a_session_fails(roots: DataRoots, make_real_media: Any):
+    make_real_media(28)
+    place_fake_media(roots.data, WINTER_FOLDER, [29])
+
+    result = _run("extract-audio")
+
+    assert result.exit_code == EXIT_STAGE_FAILED
+    assert "FAILED session 29" in result.output

@@ -83,9 +83,30 @@ video:
 audio:
   sample_rate: 16000      # Silero VAD and speaker embeddings both expect 16 kHz
   codec: "pcm_s16le"      # uncompressed mono WAV
-  # UNCONFIRMED: one mixed stream (likely) or one per speaker. "auto" lets the
-  # inventory stage decide per file. Force with "mixed" or "per_speaker".
+  # CONFIRMED by `vc inventory` over all 62 recordings: a single mixed AAC
+  # stream, stereo, 48 kHz. "auto" still checks per file and flags anything
+  # that disagrees, rather than trusting this note.
   stream_layout: "auto"
+
+  stereo_probe:
+    # The one stream is stereo, and Zoom sometimes pans speakers across the
+    # stereo field. If the channels genuinely differ, that partial separation
+    # is a cheap signal about who is speaking that owes nothing to
+    # diarization, so the channels are compared rather than assumed identical.
+    # Measured while the audio is being decoded anyway, so it costs almost
+    # nothing. See docs/decisions/0010.
+    enabled: true
+    # Frames quieter than this count as silence and are left out of the
+    # correlation: silence correlates arbitrarily and would swamp the result.
+    activity_floor: 0.002
+    # At or above this correlation, treat the channels as the same signal.
+    # Lossy AAC means a mono source will not be bit-identical, so the
+    # correlation, not exact equality, is the measure to trust.
+    correlated_above: 0.98
+    # Below this, separation is strong enough to be worth exploiting.
+    strong_separation_below: 0.50
+    imbalance_db: 3.0       # flag a channel this much louder than the other
+    chunk_seconds: 10.0     # decode window; bounds memory, not the result
 
 diarization:
   # "import"              read existing whisper-diarization output (default:
