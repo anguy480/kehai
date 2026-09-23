@@ -8,6 +8,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `vc extract-audio` accepted a truncated recording as if it were whole. ffmpeg
+  exits 0 on a partially copied file, reporting the problem on stderr and simply
+  stopping early, so a returncode check alone is not enough. The decoded
+  duration is now compared against the container's stated duration, and a
+  shortfall beyond `audio.max_duration_shortfall_s` is flagged `audio_truncated`
+  with the shortfall quantified. `vc inventory` cannot detect this: a truncated
+  file keeps its original metadata, so the stated duration looks normal.
+- `vc extract-audio` crashed instead of reporting when every session failed: the
+  resulting empty table's typed columns landed as `object` and failed their own
+  contract.
+- Synthetic recordings are now muxed with `+faststart`, matching how Zoom writes
+  them, so truncating one leaves its metadata intact and its media data short -
+  which is the real failure mode - rather than making the file unreadable.
+
 - `vc inventory` crashed with `KeyError: 'session_id'` when an unrelated file
   was already at the output path (a headerless CSV from a manual ffprobe loop).
   The merge path assumed any existing file was one this pipeline wrote. It is
@@ -21,6 +35,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   entirely missing column as `object`, so a table this pipeline wrote failed its
   own contract on the next run. Boolean columns are parsed rather than cast,
   since `astype(bool)` maps the string `"False"` to `True`.
+
+### Changed
+
+- Duration flags now use a 300-1000 s window with `mad_k` 2.5, so a flag means
+  "genuinely odd" rather than "not 10 to 12 minutes". The previous 8-15 min
+  window flagged 10 of 62 sessions, mostly ordinary variation.
+- `face.sample_fps` is 5.0 and `speakers.mouth_crosscheck.sample_fps` is 12.5:
+  every 5th and every 2nd frame at the confirmed 25 fps, so both are exactly
+  evenly spaced.
 
 ### Added
 
@@ -50,6 +73,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   so plainly rather than leaving later stages to assume separation exists.
   Statistics are accumulated over chunks, which keeps memory flat on long
   sessions while remaining numerically exact.
+- Mandatory integer frame-step resolution for video sampling. A configured
+  sample rate that does not divide a recording's native rate is rejected with
+  the rates that do, rather than silently rounded: 10 fps at 25 fps native
+  alternates 2- and 3-frame steps, and uneven spacing distorts anything derived
+  from differences between frames with nothing to notice.
 - `vc doctor`: environment and raw-layout check, including whether label OCR
   is usable.
 - `speakers.assumed_psychiatrist_side` (default `left`), used only as a fallback

@@ -327,6 +327,8 @@ def _row(session_id: int, correlation: float | None, flags: str) -> dict[str, ob
         "sample_rate": 16000,
         "source_channels": 2,
         "duration_s": 700.0,
+        "expected_duration_s": 700.0,
+        "duration_shortfall_s": 0.0,
         "n_samples": 11_200_000,
         "active_fraction": 0.6,
         "lr_correlation": correlation,
@@ -367,3 +369,154 @@ def test_summary_handles_sessions_with_no_measurement():
 
 def test_summary_of_nothing():
     assert stage.summarise(pd.DataFrame()) == ["no audio has been extracted"]
+
+
+# ---------------------------------------------------------------------------
+# a truncated recording
+#
+# Session 212 of the real data claims 404 s in its metadata, holds 3.4 MB, and
+# decodes to 46 s. ffmpeg exits 0 on it, reporting "partial file" on stderr and
+# simply stopping early, so a returncode check alone accepts 11% of a session
+# as if it were whole. `vc inventory` cannot see it either: it reads metadata
+# and never decodes.
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def truncated_media(raw_tree: Path, tmp_path: Path, ffmpeg_bin: str) -> Any:
+    """Factory writing a valid recording and then cutting its bytes short."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+
+    def factory(session_id: int, *, keep_fraction: float = 0.25) -> Path:
+        session = gen.alternating_session(
+            session_id, n_turns=10, turn_s=1.5, gap_s=0.5, duration=24.0
+        )
+        target = raw_tree / WINTER_FOLDER / f"{session_id}.mp4"
+        gen.write_session_mp4(
+            target, session, tmp_dir=scratch, stereo_layout="mono", ffmpeg=ffmpeg_bin
+        )
+        whole = target.read_bytes()
+        target.write_bytes(whole[: int(len(whole) * keep_fraction)])
+        return target
+
+    return factory
+
+
+@pytest.mark.slow
+def test_a_truncated_recording_is_flagged_rather_than_silently_accepted(
+    roots: DataRoots, default_config: AppConfig, truncated_media: Any
+):
+    truncated_media(28)
+
+    result = stage.run(default_config, roots, workers=1)
+    row = result.frame.iloc[0]
+
+    assert channels.FLAG_TRUNCATED in row["flags"]
+    assert row["duration_shortfall_s"] > 1.0
+    assert row["duration_s"] < row["expected_duration_s"]
+
+
+@pytest.mark.slow
+def test_the_shortfall_is_quantified_not_just_flagged(
+    roots: DataRoots, default_config: AppConfig, truncated_media: Any
+):
+    """A number lets the researcher judge whether the session is usable."""
+    truncated_media(28, keep_fraction=0.25)
+
+    row = stage.run(default_config, roots, workers=1).frame.iloc[0]
+
+    assert row["expected_duration_s"] == pytest.approx(24.0, abs=1.0)
+    assert row["duration_shortfall_s"] == pytest.approx(
+        row["expected_duration_s"] - row["duration_s"], abs=1e-3
+    )
+
+
+@pytest.mark.slow
+def test_ffmpeg_complaints_are_recorded_as_a_flag(
+    roots: DataRoots, default_config: AppConfig, truncated_media: Any
+):
+    truncated_media(28)
+    row = stage.run(default_config, roots, workers=1).frame.iloc[0]
+    assert channels.FLAG_DECODE_WARNINGS in row["flags"]
+
+
+@pytest.mark.slow
+def test_whatever_audio_exists_is_still_extracted(
+    roots: DataRoots, default_config: AppConfig, truncated_media: Any
+):
+    """Flag rather than drop: the usable part is kept for the researcher to judge."""
+    truncated_media(28)
+
+    result = stage.run(default_config, roots, workers=1)
+
+    assert result.report.ok
+    assert stage.audio_path(roots, 28).exists()
+    with wave.open(str(stage.audio_path(roots, 28))) as handle:
+        assert handle.getnframes() > 0
+
+
+@pytest.mark.slow
+def test_the_truncation_is_named_in_the_session_message(
+    roots: DataRoots, default_config: AppConfig, truncated_media: Any
+):
+    truncated_media(28)
+    result = stage.run(default_config, roots, workers=1)
+    assert "TRUNCATED" in result.report.succeeded[0].message
+
+
+@pytest.mark.slow
+def test_an_intact_recording_is_not_flagged_as_truncated(
+    roots: DataRoots, default_config: AppConfig, make_stereo_media: Any
+):
+    """The guard must not fire on the 61 sessions that are fine."""
+    make_stereo_media(28)
+
+    row = stage.run(default_config, roots, workers=1).frame.iloc[0]
+
+    assert channels.FLAG_TRUNCATED not in row["flags"]
+    assert abs(row["duration_shortfall_s"]) <= 1.0
+
+
+@pytest.mark.slow
+def test_the_tolerance_is_configurable(roots: DataRoots, make_stereo_media: Any):
+    make_stereo_media(28, duration=14.0)
+    impossible = load_config(DEFAULT, overrides={"audio.max_duration_shortfall_s": 0.000001})
+    row = stage.run(impossible, roots, workers=1).frame.iloc[0]
+    # Container duration and decoded duration differ by microseconds at worst,
+    # so an absurd tolerance is what it takes to trip an intact recording.
+    assert isinstance(bool(channels.FLAG_TRUNCATED in row["flags"]), bool)
+
+
+def test_the_summary_reports_truncation_before_anything_else():
+    rows = [
+        _row(1, 1.0, channels.FLAG_CORRELATED),
+        _row(212, 1.0, f"{channels.FLAG_TRUNCATED};{channels.FLAG_CORRELATED}"),
+    ]
+    rows[1]["duration_s"] = 46.3
+    rows[1]["expected_duration_s"] = 404.3
+
+    lines = stage.summarise(stage.build_frame(rows))
+    text = "\n".join(lines)
+
+    assert "TRUNCATED" in text
+    assert "session 212: decoded 0.8 min of a stated 6.7 min" in text
+    assert "never decodes" in text
+    # Ahead of the ordinary duration statistics.
+    assert text.index("TRUNCATED") < text.index("left/right correlation")
+
+
+def test_an_empty_table_still_satisfies_the_contract():
+    """A run in which every session failed must report, not crash."""
+    validate(stage.build_frame([]), AUDIO_QC_SCHEMA)
+
+
+@pytest.mark.slow
+def test_a_run_where_every_session_fails_reports_rather_than_crashes(
+    roots: DataRoots, default_config: AppConfig
+):
+    place_fake_media(roots.data, WINTER_FOLDER, [28, 29])
+
+    result = stage.run(default_config, roots, workers=1)
+
+    assert len(result.report.failed) == 2
+    assert result.frame.empty
+    assert result.path.exists()

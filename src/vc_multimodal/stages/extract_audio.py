@@ -30,8 +30,10 @@ import pandas as pd
 from vc_multimodal.config import AppConfig
 from vc_multimodal.contracts import AUDIO_QC_SCHEMA, validate
 from vc_multimodal.features.channels import (
+    FLAG_DECODE_WARNINGS,
     FLAG_NOT_STEREO,
     FLAG_PARTIAL_SEPARATION,
+    FLAG_TRUNCATED,
     StereoAccumulator,
     StereoStats,
     downmix_to_mono,
@@ -63,6 +65,8 @@ COLUMN_ORDER: Final = (
     "sample_rate",
     "source_channels",
     "duration_s",
+    "expected_duration_s",
+    "duration_shortfall_s",
     "n_samples",
     "active_fraction",
     "lr_correlation",
@@ -136,17 +140,19 @@ def _decode_to_mono_wav(
     chunk_bytes: int,
     accumulator: StereoAccumulator | None,
     source_name: str,
-) -> int:
+) -> tuple[int, str]:
     """Stream ffmpeg's PCM output into a mono WAV, feeding the accumulator.
 
     Reads in chunks so no whole recording is ever held in memory, and carries a
     partial frame across a chunk boundary rather than dropping it.
 
     Returns:
-        The number of mono samples written.
+        The number of mono samples written, and whatever ffmpeg wrote to stderr.
+        ffmpeg exits 0 on a corrupt input, reporting the problem on stderr and
+        simply stopping early, so the caller has to look at both.
 
     Raises:
-        FfmpegError: if ffmpeg fails or decodes nothing.
+        FfmpegError: if ffmpeg fails outright or decodes nothing.
     """
     n_samples = 0
     # argv is built from located binaries and config, never a shell string.
@@ -199,7 +205,7 @@ def _decode_to_mono_wav(
     if n_samples == 0:
         msg = f"no audio samples were decoded from {source_name}"
         raise FfmpegError(msg)
-    return n_samples
+    return n_samples, stderr.decode("utf-8", errors="replace").strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,11 +218,20 @@ class ExtractedAudio:
     source_channels: int
     n_samples: int
     stats: StereoStats | None
+    expected_duration_s: float | None = None
+    decode_warnings: str = ""
 
     @property
     def duration_s(self) -> float:
         """Length of the written audio in seconds."""
         return self.n_samples / self.sample_rate if self.sample_rate else 0.0
+
+    @property
+    def shortfall_s(self) -> float | None:
+        """How far the decoded audio fell short of the stated duration."""
+        if self.expected_duration_s is None:
+            return None
+        return self.expected_duration_s - self.duration_s
 
 
 def extract_stream(
@@ -271,7 +286,7 @@ def extract_stream(
     )
 
     with atomic_path(target, suffix=".wav") as tmp:
-        n_samples = _decode_to_mono_wav(
+        n_samples, warnings = _decode_to_mono_wav(
             command,
             tmp,
             sample_rate=audio_config.sample_rate,
@@ -289,6 +304,8 @@ def extract_stream(
         source_channels=source_channels,
         n_samples=n_samples,
         stats=accumulator.result() if accumulator is not None else None,
+        expected_duration_s=info.duration_s,
+        decode_warnings=warnings,
     )
 
 
@@ -299,6 +316,12 @@ def stats_record(
     probe = config.audio.stereo_probe
     stats = extracted.stats
     flags = list(extra_flags)
+
+    shortfall = extracted.shortfall_s
+    if shortfall is not None and shortfall > config.audio.max_duration_shortfall_s:
+        flags.append(FLAG_TRUNCATED)
+    if extracted.decode_warnings:
+        flags.append(FLAG_DECODE_WARNINGS)
 
     if stats is None:
         flags.append(FLAG_NOT_STEREO)
@@ -318,6 +341,10 @@ def stats_record(
         "sample_rate": extracted.sample_rate,
         "source_channels": extracted.source_channels,
         "duration_s": round(extracted.duration_s, 3),
+        "expected_duration_s": None
+        if extracted.expected_duration_s is None
+        else round(extracted.expected_duration_s, 3),
+        "duration_shortfall_s": None if shortfall is None else round(shortfall, 3),
         "n_samples": extracted.n_samples,
         "active_fraction": None if stats is None else round(stats.active_fraction, 4),
         "lr_correlation": None
@@ -336,10 +363,19 @@ def stats_record(
 def build_frame(rows: Sequence[Mapping[str, object]]) -> pd.DataFrame:
     """Assemble audio QC rows into a correctly typed table."""
     frame = pd.DataFrame(list(rows), columns=list(COLUMN_ORDER))
+    # Explicit even when empty: a run in which every session failed would
+    # otherwise produce `object` columns that the contract rejects, turning a
+    # reportable outcome into a crash.
+    frame["session_id"] = pd.to_numeric(frame["session_id"], errors="coerce").astype("int64")
+    # pandas gives text columns its string dtype, but an empty one lands as
+    # `object`; declaring it keeps both cases identical for the contract.
+    frame["wave"] = frame["wave"].astype("string")
     for column in ("sample_rate", "source_channels", "n_samples"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce").astype("Int64")
     for column in (
         "duration_s",
+        "expected_duration_s",
+        "duration_shortfall_s",
         "active_fraction",
         "lr_correlation",
         "ild_db",
@@ -422,9 +458,22 @@ def run(
         record = stats_record(written[0], wave_name=session.wave, config=config, extra_flags=extra)
         write_json(stats_path(roots, session.session_id), record)
 
+        if written[0].decode_warnings:
+            # ffmpeg's complaints are technical, not content: corrupt packet
+            # offsets and decoder errors.
+            logger.warning(
+                "session %s: ffmpeg reported problems while decoding: %s",
+                session.session_id,
+                written[0].decode_warnings.splitlines()[0][:200],
+            )
+
         correlation = record["lr_correlation"]
         shown = f"{correlation:.3f}" if isinstance(correlation, float) else "n/a"
-        return f"{len(written)} stream(s), {written[0].duration_s:.1f}s, L/R r={shown}"
+        note = f"{len(written)} stream(s), {written[0].duration_s:.1f}s, L/R r={shown}"
+        if FLAG_TRUNCATED in str(record["flags"]):
+            shortfall = record["duration_shortfall_s"]
+            note += f" TRUNCATED: {shortfall}s short of the stated duration"
+        return note
 
     report = run_sessions(
         STAGE,
@@ -453,12 +502,53 @@ def run(
     return ExtractAudioResult(report=report, frame=frame, path=target)
 
 
+def _flag_lines(frame: pd.DataFrame) -> list[str]:
+    """Group the QC flags by name, with the sessions that raised each."""
+    flagged = frame.loc[frame["flags"].astype(str) != ""]
+    if flagged.empty:
+        return ["flags: none"]
+
+    by_flag: dict[str, list[int]] = {}
+    for session_id, raw in zip(flagged["session_id"], flagged["flags"], strict=True):
+        for flag in str(raw).split(";"):
+            if flag:
+                by_flag.setdefault(flag, []).append(int(session_id))
+
+    lines = ["flags:"]
+    lines.extend(
+        f"  {name}: {len(ids)} session(s)"
+        + (f" {sorted(ids)}" if len(ids) <= _MAX_LISTED_SESSIONS else "")
+        for name, ids in sorted(by_flag.items())
+    )
+    return lines
+
+
 def summarise(frame: pd.DataFrame) -> list[str]:
     """Summarise extracted audio and the stereo comparison, metadata only."""
     if frame.empty:
         return ["no audio has been extracted"]
 
     lines = [f"audio extracted for {len(frame)} session(s)"]
+
+    # Truncation first: it means a recording is not what its metadata claims,
+    # which matters more than anything else on this table.
+    truncated = frame.loc[frame["flags"].astype(str).str.contains(FLAG_TRUNCATED, regex=False)]
+    if not truncated.empty:
+        lines.append("")
+        lines.append(f"TRUNCATED: {len(truncated)} recording(s) decoded short of their")
+        lines.append("stated duration, so the file holds less audio than its metadata says:")
+        for session_id, got, expected in zip(
+            truncated["session_id"],
+            truncated["duration_s"],
+            truncated["expected_duration_s"],
+            strict=True,
+        ):
+            lines.append(
+                f"  session {int(session_id)}: decoded {got / 60:.1f} min "
+                f"of a stated {expected / 60:.1f} min"
+            )
+        lines.append("  `vc inventory` cannot see this: it reads metadata and never decodes.")
+        lines.append("")
 
     durations = frame["duration_s"].dropna()
     if not durations.empty:
@@ -511,21 +601,6 @@ def summarise(frame: pd.DataFrame) -> list[str]:
             f"largest imbalance {ild.abs().max():.2f} dB"
         )
 
-    flagged = frame.loc[frame["flags"].astype(str) != ""]
     lines.append("")
-    if flagged.empty:
-        lines.append("flags: none")
-    else:
-        by_flag: dict[str, list[int]] = {}
-        for session_id, raw in zip(flagged["session_id"], flagged["flags"], strict=True):
-            for flag in str(raw).split(";"):
-                if flag:
-                    by_flag.setdefault(flag, []).append(int(session_id))
-        lines.append("flags:")
-        lines.extend(
-            f"  {name}: {len(ids)} session(s)"
-            + (f" {sorted(ids)}" if len(ids) <= _MAX_LISTED_SESSIONS else "")
-            for name, ids in sorted(by_flag.items())
-        )
-
+    lines.extend(_flag_lines(frame))
     return lines

@@ -136,6 +136,11 @@ AUDIO_QC_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
         "sample_rate": pa.Column("Int64", pa.Check.gt(0), nullable=False),
         "source_channels": pa.Column("Int64", pa.Check.ge(0), nullable=True),
         "duration_s": pa.Column(float, pa.Check.ge(0.0), nullable=True),
+        # The container's stated duration, and how far the decoded audio fell
+        # short of it. A truncated file keeps honest-looking metadata, so the
+        # two are recorded separately rather than assumed equal.
+        "expected_duration_s": pa.Column(float, pa.Check.ge(0.0), nullable=True),
+        "duration_shortfall_s": pa.Column(float, nullable=True),
         "n_samples": pa.Column("Int64", pa.Check.ge(0), nullable=True),
         "active_fraction": pa.Column(float, pa.Check.in_range(0.0, 1.0), nullable=True),
         # Null when the recording was mono, or had nothing active to measure.

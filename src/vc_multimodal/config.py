@@ -295,6 +295,11 @@ class AudioConfig(_Base):
     sample_rate: int = Field(gt=0)
     stream_layout: Literal["auto", "mixed", "per_speaker"]
     codec: str
+    # How much shorter than the container's stated duration the decoded audio
+    # may be before the recording is flagged as truncated. A corrupt or
+    # partially copied file keeps its original metadata, so the stated duration
+    # looks normal and only decoding reveals the shortfall.
+    max_duration_shortfall_s: float = Field(gt=0.0)
     stereo_probe: StereoProbeConfig
 
 

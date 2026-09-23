@@ -398,7 +398,20 @@ def mux(
     command += ["-map", "0:v:0"]
     for index in range(len(audio_streams)):
         command += ["-map", f"{index + 1}:a:0"]
-    command += ["-c:v", "copy", "-c:a", "aac", "-shortest", str(out_path)]
+    # +faststart moves the moov atom to the front, as a Zoom recording has it.
+    # It also makes truncation realistic: cutting the tail leaves the metadata
+    # intact and the media data short, which is how a partially copied file
+    # behaves, rather than making the file unreadable.
+    command += [
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        str(out_path),
+    ]
 
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:

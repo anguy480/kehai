@@ -35,13 +35,19 @@ dataset:
       id_min: 102
       id_max: 261
 
-  # Sessions are nominally 10-12 minutes. A recording is flagged if it falls
-  # outside the absolute window OR more than mad_k median-absolute-deviations
-  # from the cohort median. Flagging never drops a session; it only reports.
+  # Sessions are nominally 10-12 minutes, but the real spread is 3.9 to 16.2
+  # minutes (median 11.6). A recording is flagged if it falls outside the
+  # absolute window OR more than mad_k median-absolute-deviations from the
+  # cohort median. Flagging never drops a session; it only reports.
+  #
+  # The window is deliberately wide so that a flag means "genuinely odd"
+  # rather than "not 10 to 12 minutes": at 8-15 min it flagged 10 of 62
+  # sessions, mostly ordinary variation. The robust test carries the load
+  # instead, at a tighter mad_k.
   duration:
-    min_seconds: 480.0    # 8 min
-    max_seconds: 900.0    # 15 min
-    mad_k: 4.0
+    min_seconds: 300.0    # 5 min
+    max_seconds: 1000.0   # 16.7 min
+    mad_k: 2.5
 
   # Already known to be unusually short. Listed so the inventory can report it
   # as expected rather than as a surprise.
@@ -87,6 +93,13 @@ audio:
   # stream, stereo, 48 kHz. "auto" still checks per file and flags anything
   # that disagrees, rather than trusting this note.
   stream_layout: "auto"
+
+  # A corrupt or partially copied recording keeps its original metadata, so its
+  # stated duration looks normal and ffprobe cannot tell: session 212 claims
+  # 404 s in 3.4 MB and decodes to 46 s. ffmpeg exits 0 on it. The decoded
+  # audio is therefore compared against the stated duration, and a shortfall
+  # beyond this many seconds is flagged as truncated.
+  max_duration_shortfall_s: 1.0
 
   stereo_probe:
     # The one stream is stereo, and Zoom sometimes pans speakers across the
@@ -219,7 +232,11 @@ speakers:
     # the two is recorded as a QC column.
     enabled: true
     tiles: null             # null means every tile in video.tiles
-    sample_fps: 10.0
+    # Also must divide the native 25 fps exactly. Kept higher than
+    # face.sample_fps: correlating a mouth against a speech timeline benefits
+    # from temporal resolution, whereas session-level summaries do not.
+    # 12.5 fps is every 2nd frame.
+    sample_fps: 12.5
     min_correlation: 0.15   # below this, the visual evidence is too weak to use
     min_separation: 0.10    # required gap between best and second-best tile
 
@@ -255,7 +272,16 @@ prosody:
 
 face:
   backend: "mediapipe"             # or "openface" to import OpenFace 2.0 CSVs
-  sample_fps: 10.0                 # 5.0 roughly halves runtime if needed
+  # Every recording runs at a constant 25 fps, so 5.0 means every 5th frame:
+  # exactly even spacing, which matters more than temporal resolution for
+  # session-level summary statistics, and half the work of 10 fps.
+  #
+  # The rate MUST divide the native frame rate exactly. A rate that does not
+  # (10 fps at 25 fps native, which alternates 2- and 3-frame steps) is
+  # rejected rather than silently rounded, because uneven spacing quietly
+  # distorts anything derived from differences between frames. At 25 fps the
+  # exact options are 25, 12.5, 5, 2.5 and 1.
+  sample_fps: 5.0
   min_confidence: 0.50             # drop lower-confidence frames
   max_dropped_fraction: 0.40       # above this, flag the session in QC
 

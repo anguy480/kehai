@@ -37,6 +37,8 @@ FLAG_CHANNEL_IMBALANCE: Final = "stereo_channel_imbalance"
 FLAG_CLIPPING: Final = "audio_clipping"
 FLAG_NOT_STEREO: Final = "audio_not_stereo"
 FLAG_NO_ACTIVE_AUDIO: Final = "audio_no_active_signal"
+FLAG_TRUNCATED: Final = "audio_truncated"
+FLAG_DECODE_WARNINGS: Final = "audio_decode_warnings"
 
 _STEREO_CHANNELS: Final = 2
 # Correlation needs at least two frames to have any variance to divide by.
