@@ -60,6 +60,14 @@ video:
   # Confirm with `vc preview`, then set this to "gallery" or "active_speaker".
   layout: "gallery"
 
+  # Zoom recordings can carry black bars. When they do, the participant tiles
+  # occupy the content area, not the whole 1280x720 frame, so splitting the
+  # frame down the middle splits the picture off-centre and every crop is
+  # wrong. "auto" detects the bars per frame and interprets the tile fractions
+  # below within the content area. "off" treats them as fractions of the whole
+  # frame. `vc verify-layout --debug-region` reports what was detected.
+  letterbox_detection: "auto"
+
   # Crop boxes in fractional frame coordinates (origin top-left), so one config
   # works at any resolution. Defaults split the frame down the middle.
   # UNCONFIRMED: adjust after looking at the preview images.
@@ -204,13 +212,28 @@ speakers:
       height: 0.18
 
     sample_times_seconds: [60.0, 300.0, 540.0]
+
+    # Name labels are small: in a 1280x720 frame a tile is 640 wide and the
+    # label text only a dozen or so pixels tall, which is near the limit of
+    # what on-device OCR reads reliably. The label patch is enlarged by this
+    # factor before recognition.
+    upscale: 3.0
+
     min_confidence: 0.30
 
     # The psychiatrist is identified without ever being named: their label is
     # the one that recurs across sessions, while each participant's appears
     # once. A label must show up in at least this fraction of sessions to count
     # as the recurring one.
-    min_recurrence: 0.50
+    #
+    # Set from the data, not guessed. Two recurring labels appear across the 62
+    # sessions, each covering roughly half the cohort - consistent with two
+    # psychiatrists, one per recruitment wave (see docs/decisions/0008). Any
+    # threshold above about 0.42 therefore recognises neither of them: at 0.50
+    # only 49 of 62 sessions could be settled, all of the rest being summer
+    # wave. At 0.10 (six sessions) 59 of 62 settle. A participant's label
+    # appears exactly once, so 0.10 still separates the two cleanly.
+    min_recurrence: 0.10
 
     # Optional explicit label patterns, comma-separated, read from THIS
     # environment variable (set it in .env). Only the variable name lives here:

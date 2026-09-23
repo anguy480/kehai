@@ -28,7 +28,7 @@ import os
 import re
 import unicodedata
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -38,6 +38,14 @@ import pandas as pd
 
 from vc_multimodal.config import AppConfig, CropBox
 from vc_multimodal.contracts import LAYOUT_SCHEMA, validate
+from vc_multimodal.features.geometry import (
+    FULL_FRAME,
+    ContentBox,
+    RegionGeometry,
+    detect_content_box,
+    format_box,
+    resolve_regions,
+)
 from vc_multimodal.ffmpeg import FfmpegTools, parse_media_info
 from vc_multimodal.io_utils import write_csv
 from vc_multimodal.logging_setup import get_logger
@@ -50,6 +58,7 @@ logger = get_logger(__name__)
 
 STAGE: Final = "verify-layout"
 LAYOUT_FILENAME: Final = "layout.csv"
+LAYOUT_DEBUG_FILENAME: Final = "layout_debug.csv"
 
 SIDE_LEFT: Final = "left"
 SIDE_RIGHT: Final = "right"
@@ -225,6 +234,144 @@ def resolve(decision: SideDecision, assumed_side: str) -> tuple[str, str, bool |
 # Reading labels from frames
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
+class RegionObservations:
+    """What OCR saw in one region of one session, and where that region was.
+
+    Deliberately carries counts and coordinates only. Recognised text never
+    enters this record, because the whole point of the diagnostic is to be
+    printable.
+    """
+
+    session_id: int
+    frame_width: int
+    frame_height: int
+    content_detected: bool
+    content_box: CropBox
+    content_bars: tuple[int, int, int, int]
+    geometry: RegionGeometry
+    upscale: float
+    n_frames_read: int = 0
+    n_observations: int = 0
+    n_above_confidence: int = 0
+    n_usable_labels: int = 0
+    max_confidence: float = 0.0
+    n_ocr_errors: int = 0
+
+    def report_lines(self) -> list[str]:
+        """Human-readable diagnostic for this region."""
+        geometry = self.geometry
+        return [
+            f"  tile {geometry.tile!r} ({geometry.role})",
+            f"    tile  {format_box(geometry.tile_box, geometry.tile_pixels)}",
+            f"    label {format_box(geometry.label_box, geometry.label_pixels)}"
+            + ("  [whole tile]" if geometry.label_is_whole_tile else ""),
+            f"    read {self.n_frames_read} frame(s) at {self.upscale:g}x: "
+            f"{self.n_observations} observation(s), "
+            f"{self.n_above_confidence} above confidence "
+            f"{'' if self.n_ocr_errors == 0 else f'({self.n_ocr_errors} OCR error(s)) '}"
+            f"-> {self.n_usable_labels} usable label(s), "
+            f"max confidence {self.max_confidence:.2f}",
+        ]
+
+
+DEBUG_COLUMN_ORDER: Final = (
+    "session_id",
+    "frame_width",
+    "frame_height",
+    "content_detected",
+    "content_x",
+    "content_y",
+    "content_width",
+    "content_height",
+    "bar_left",
+    "bar_top",
+    "bar_right",
+    "bar_bottom",
+    "tile",
+    "role",
+    "tile_x",
+    "tile_y",
+    "tile_width",
+    "tile_height",
+    "tile_px_left",
+    "tile_px_top",
+    "tile_px_width",
+    "tile_px_height",
+    "label_x",
+    "label_y",
+    "label_width",
+    "label_height",
+    "label_px_left",
+    "label_px_top",
+    "label_px_width",
+    "label_px_height",
+    "upscale",
+    "n_frames_read",
+    "n_observations",
+    "n_above_confidence",
+    "n_usable_labels",
+    "max_confidence",
+    "n_ocr_errors",
+)
+
+
+def debug_frame(observations: Sequence[RegionObservations]) -> pd.DataFrame:
+    """Assemble the per-region diagnostic table.
+
+    One row per region per session, with every coordinate in both fractional
+    and pixel form. No text column exists on this table by construction.
+    """
+    rows: list[dict[str, object]] = []
+    for item in observations:
+        geometry = item.geometry
+        tile_px = geometry.tile_pixels
+        label_px = geometry.label_pixels
+        rows.append(
+            {
+                "session_id": item.session_id,
+                "frame_width": item.frame_width,
+                "frame_height": item.frame_height,
+                "content_detected": item.content_detected,
+                "content_x": round(item.content_box.x, 6),
+                "content_y": round(item.content_box.y, 6),
+                "content_width": round(item.content_box.width, 6),
+                "content_height": round(item.content_box.height, 6),
+                "bar_left": item.content_bars[0],
+                "bar_top": item.content_bars[1],
+                "bar_right": item.content_bars[2],
+                "bar_bottom": item.content_bars[3],
+                "tile": geometry.tile,
+                "role": geometry.role,
+                "tile_x": round(geometry.tile_box.x, 6),
+                "tile_y": round(geometry.tile_box.y, 6),
+                "tile_width": round(geometry.tile_box.width, 6),
+                "tile_height": round(geometry.tile_box.height, 6),
+                "tile_px_left": tile_px[0],
+                "tile_px_top": tile_px[1],
+                "tile_px_width": tile_px[2],
+                "tile_px_height": tile_px[3],
+                "label_x": round(geometry.label_box.x, 6),
+                "label_y": round(geometry.label_box.y, 6),
+                "label_width": round(geometry.label_box.width, 6),
+                "label_height": round(geometry.label_box.height, 6),
+                "label_px_left": label_px[0],
+                "label_px_top": label_px[1],
+                "label_px_width": label_px[2],
+                "label_px_height": label_px[3],
+                "upscale": item.upscale,
+                "n_frames_read": item.n_frames_read,
+                "n_observations": item.n_observations,
+                "n_above_confidence": item.n_above_confidence,
+                "n_usable_labels": item.n_usable_labels,
+                "max_confidence": round(item.max_confidence, 4),
+                "n_ocr_errors": item.n_ocr_errors,
+            }
+        )
+    frame = pd.DataFrame(rows, columns=list(DEBUG_COLUMN_ORDER))
+    return frame.sort_values(["session_id", "tile"], ignore_index=True)
+
+
+@dataclass(frozen=True, slots=True)
 class TileLabels:
     """What OCR found in one tile of one session."""
 
@@ -260,6 +407,113 @@ def crop_label_region(tile: cv2.typing.MatLike, region: CropBox | None) -> cv2.t
     return tile[top : top + box_h, left : left + box_w]
 
 
+def upscaled(patch: cv2.typing.MatLike, factor: float) -> cv2.typing.MatLike:
+    """Enlarge a label patch before recognition.
+
+    Name labels are small enough to sit near the limit of what on-device OCR
+    reads reliably, and enlarging costs almost nothing on a patch this size.
+    """
+    if factor <= 1.0 or patch.size == 0:
+        return patch
+    height, width = patch.shape[:2]
+    return cv2.resize(
+        patch,
+        (max(1, round(width * factor)), max(1, round(height * factor))),
+        interpolation=cv2.INTER_CUBIC,
+    )
+
+
+def _read_frame_regions(
+    image: cv2.typing.MatLike,
+    geometry: Sequence[RegionGeometry],
+    *,
+    config: AppConfig,
+    backend: OcrBackend,
+    found: MutableMapping[str, list[str]],
+    confidence: MutableMapping[str, float],
+    counts: Mapping[str, MutableMapping[str, float]],
+) -> int:
+    """Read every region of one frame, accumulating labels and counts.
+
+    Returns:
+        How many reads failed, so the caller can flag a session whose OCR did
+        not work at all.
+    """
+    ocr_config = config.speakers.label_ocr
+    errors = 0
+
+    for region in geometry:
+        side = config.video.side_of_tile(region.tile)
+        if side is None:  # pragma: no cover - guarded by is_two_tile
+            continue
+        left, top, box_w, box_h = region.label_pixels
+        patch = upscaled(image[top : top + box_h, left : left + box_w], ocr_config.upscale)
+        counts[side]["frames"] += 1
+
+        try:
+            lines = backend.read(patch, languages=ocr_config.languages)
+        except OcrError:
+            # One unreadable patch must not lose the whole session. The error
+            # type is counted; the exception text is not logged, because a
+            # backend may quote what it was reading.
+            errors += 1
+            counts[side]["errors"] += 1
+            continue
+
+        counts[side]["observations"] += len(lines)
+        for line in lines:
+            if line.confidence < ocr_config.min_confidence:
+                continue
+            counts[side]["above"] += 1
+            confidence[side] = max(confidence[side], line.confidence)
+            key = normalise_label(line.text)
+            if not key:
+                continue
+            counts[side]["usable"] += 1
+            found[side].append(key)
+
+    return errors
+
+
+def _build_observations(
+    session_id: int,
+    *,
+    config: AppConfig,
+    geometry: Sequence[RegionGeometry],
+    content: ContentBox,
+    frame_size: tuple[int, int],
+    counts: Mapping[str, Mapping[str, float]],
+    confidence: Mapping[str, float],
+) -> tuple[RegionObservations, ...]:
+    """Assemble the per-region diagnostic records for one session."""
+    frame_width, frame_height = frame_size
+    records: list[RegionObservations] = []
+    for region in geometry:
+        side = config.video.side_of_tile(region.tile)
+        if side is None:  # pragma: no cover - guarded by is_two_tile
+            continue
+        tally = counts[side]
+        records.append(
+            RegionObservations(
+                session_id=session_id,
+                frame_width=frame_width,
+                frame_height=frame_height,
+                content_detected=content.detected,
+                content_box=content.box,
+                content_bars=content.bars,
+                geometry=region,
+                upscale=config.speakers.label_ocr.upscale,
+                n_frames_read=int(tally["frames"]),
+                n_observations=int(tally["observations"]),
+                n_above_confidence=int(tally["above"]),
+                n_usable_labels=int(tally["usable"]),
+                max_confidence=confidence[side],
+                n_ocr_errors=int(tally["errors"]),
+            )
+        )
+    return tuple(records)
+
+
 def read_session_labels(
     session: RawSession,
     *,
@@ -267,23 +521,37 @@ def read_session_labels(
     backend: OcrBackend,
     tools: FfmpegTools,
     scratch: Path,
-) -> SessionLabels:
+) -> tuple[SessionLabels, tuple[RegionObservations, ...]]:
     """OCR the name label in each tile of one session.
 
-    Frames are extracted, read and deleted one at a time, so no decoded frame of
-    a real recording is left on disk.
+    Frames are extracted, read and deleted one at a time, so no decoded frame
+    of a real recording is left on disk.
+
+    Returns:
+        The labels found per side, and a diagnostic record per region saying
+        exactly where it looked and how much it saw there.
     """
     ocr_config = config.speakers.label_ocr
     video = config.video
 
     if not video.is_two_tile:
-        return SessionLabels(session.session_id, {}, (FLAG_NOT_TWO_TILE, FLAG_INCONCLUSIVE))
+        return (
+            SessionLabels(session.session_id, {}, (FLAG_NOT_TWO_TILE, FLAG_INCONCLUSIVE)),
+            (),
+        )
 
     duration = parse_media_info(tools.probe(session.path)).duration_s
     times = sample_times(ocr_config.sample_times_seconds, duration)
 
     found: dict[str, list[str]] = {SIDE_LEFT: [], SIDE_RIGHT: []}
     confidence: dict[str, float] = {SIDE_LEFT: 0.0, SIDE_RIGHT: 0.0}
+    counts: dict[str, dict[str, float]] = {
+        side: {"frames": 0, "observations": 0, "above": 0, "usable": 0, "errors": 0}
+        for side in (SIDE_LEFT, SIDE_RIGHT)
+    }
+    geometry: tuple[RegionGeometry, ...] = ()
+    content = ContentBox(box=FULL_FRAME, detected=False)
+    frame_width = frame_height = 0
     errors = 0
 
     scratch.mkdir(parents=True, exist_ok=True)
@@ -297,40 +565,40 @@ def read_session_labels(
         if image is None:
             continue
 
-        height, width = image.shape[:2]
-        for side in (SIDE_LEFT, SIDE_RIGHT):
-            tile_name = video.tile_on_side(side)
-            if tile_name is None:  # pragma: no cover - guarded by is_two_tile
-                continue
-            box = video.tiles[tile_name]
-            left, top, box_w, box_h = box.to_pixels(width, height)
-            tile = image[top : top + box_h, left : left + box_w]
-            patch = crop_label_region(tile, ocr_config.label_region)
+        frame_height, frame_width = image.shape[:2]
+        content = (
+            detect_content_box(image)
+            if video.letterbox_detection == "auto"
+            else ContentBox(box=FULL_FRAME, detected=False)
+        )
+        geometry = resolve_regions(config, frame_width, frame_height, content=content)
 
-            try:
-                lines = backend.read(patch, languages=ocr_config.languages)
-            except OcrError:
-                # One unreadable patch must not lose the whole session. The
-                # error type is counted; the exception text is not logged,
-                # because a backend may quote what it was reading.
-                errors += 1
-                continue
-
-            for line in lines:
-                if line.confidence < ocr_config.min_confidence:
-                    continue
-                key = normalise_label(line.text)
-                if not key:
-                    continue
-                found[side].append(key)
-                confidence[side] = max(confidence[side], line.confidence)
+        errors += _read_frame_regions(
+            image,
+            geometry,
+            config=config,
+            backend=backend,
+            found=found,
+            confidence=confidence,
+            counts=counts,
+        )
 
     read_anything = any(found[side] for side in (SIDE_LEFT, SIDE_RIGHT))
     flags = () if read_anything or not errors else (FLAG_OCR_ERROR, FLAG_INCONCLUSIVE)
     if errors:
         logger.warning("session %s: %d OCR read(s) failed", session.session_id, errors)
 
-    return SessionLabels(
+    observations = _build_observations(
+        session.session_id,
+        config=config,
+        geometry=geometry,
+        content=content,
+        frame_size=(frame_width, frame_height),
+        counts=counts,
+        confidence=confidence,
+    )
+
+    labels = SessionLabels(
         session_id=session.session_id,
         by_side={
             side: TileLabels(tuple(dict.fromkeys(found[side])), confidence[side])
@@ -338,6 +606,7 @@ def read_session_labels(
         },
         flags=flags,
     )
+    return labels, observations
 
 
 def explicit_patterns(config: AppConfig) -> tuple[str, ...]:
@@ -360,6 +629,11 @@ class LayoutResult:
     report: StageReport
     frame: pd.DataFrame
     path: Path
+    #: Per-region diagnostics: where each region was and how much was seen
+    #: there. Empty when OCR did not run.
+    debug: pd.DataFrame = field(default_factory=pd.DataFrame)
+    debug_path: Path | None = None
+    observations: tuple[RegionObservations, ...] = ()
 
     @property
     def sides(self) -> Mapping[int, str]:
@@ -482,6 +756,7 @@ def run(
 
     # ---- pass 1: read labels ------------------------------------------
     labels: dict[int, SessionLabels] = {}
+    diagnostics: list[RegionObservations] = []
 
     def read_one(session: RawSession) -> str:
         if not usable:
@@ -489,7 +764,7 @@ def run(
                 session.session_id, {}, (FLAG_OCR_UNAVAILABLE, FLAG_INCONCLUSIVE)
             )
             return "OCR unavailable"
-        result = read_session_labels(
+        result, observations = read_session_labels(
             session,
             config=config,
             backend=engine,
@@ -497,6 +772,7 @@ def run(
             scratch=roots.work_path("tmp", "verify_layout", str(session.session_id)),
         )
         labels[session.session_id] = result
+        diagnostics.extend(observations)
         # Counts only. The labels themselves are never logged.
         return (
             f"{len(result.by_side[SIDE_LEFT].labels)} left / "
@@ -561,7 +837,89 @@ def run(
     write_csv(target, frame)
     logger.info("wrote %s with %d row(s)", target, len(frame))
 
-    return LayoutResult(report=report, frame=frame, path=target)
+    debug_path: Path | None = None
+    ordered_diagnostics = sorted(
+        diagnostics, key=lambda item: (item.session_id, item.geometry.tile)
+    )
+    debug_table = debug_frame(ordered_diagnostics)
+    if not debug_table.empty:
+        debug_path = roots.out_path(LAYOUT_DEBUG_FILENAME)
+        write_csv(debug_path, debug_table)
+        logger.info("wrote %s with %d row(s)", debug_path, len(debug_table))
+
+    return LayoutResult(
+        report=report,
+        frame=frame,
+        path=target,
+        debug=debug_table,
+        debug_path=debug_path,
+        observations=tuple(ordered_diagnostics),
+    )
+
+
+def debug_report(observations: Sequence[RegionObservations], config: AppConfig) -> list[str]:
+    """Render the per-region diagnostic, grouped by session.
+
+    Reports where every region was, in fractional and pixel coordinates, and
+    how much OCR saw there. Never the text itself.
+    """
+    if not observations:
+        return [
+            "no regions were examined: OCR did not run, so there is nothing to "
+            "diagnose. `vc doctor` reports whether the backend is usable."
+        ]
+
+    by_session: dict[int, list[RegionObservations]] = {}
+    for item in observations:
+        by_session.setdefault(item.session_id, []).append(item)
+
+    lines = [
+        "region diagnostic (coordinates only; recognised text is never shown)",
+        f"letterbox detection: {config.video.letterbox_detection}"
+        f" | label upscale: {config.speakers.label_ocr.upscale:g}x"
+        f" | min confidence: {config.speakers.label_ocr.min_confidence:g}",
+    ]
+    for session_id in sorted(by_session):
+        regions = by_session[session_id]
+        first = regions[0]
+        lines.append("")
+        lines.append(f"session {session_id}: frame {first.frame_width}x{first.frame_height}")
+        if first.content_detected:
+            left, top, right, bottom = first.content_bars
+            content_pixels = first.content_box.to_pixels(first.frame_width, first.frame_height)
+            lines.append(
+                f"  letterbox: bars l={left} t={top} r={right} b={bottom}; "
+                f"content {format_box(first.content_box, content_pixels)}"
+            )
+            lines.append(
+                "    tile fractions are interpreted within this content area, not the whole frame"
+            )
+        else:
+            lines.append("  letterbox: none detected; tiles are fractions of the whole frame")
+        for region in sorted(regions, key=lambda item: item.geometry.tile_box.x):
+            lines.extend(region.report_lines())
+
+    totals = {
+        "observations": sum(item.n_observations for item in observations),
+        "above confidence": sum(item.n_above_confidence for item in observations),
+        "usable labels": sum(item.n_usable_labels for item in observations),
+        "OCR errors": sum(item.n_ocr_errors for item in observations),
+    }
+    lines.append("")
+    lines.append("totals across every region: " + ", ".join(f"{k} {v}" for k, v in totals.items()))
+    if totals["observations"] == 0:
+        lines.append(
+            "  Nothing at all was recognised. That points at the region rather than "
+            "the recogniser: check the label box against an annotated preview "
+            "(`vc preview --label-regions --force`)."
+        )
+    elif totals["usable labels"] == 0:
+        lines.append(
+            "  Text was found but none of it survived normalisation or the "
+            "confidence threshold. Try lowering speakers.label_ocr.min_confidence "
+            "or raising upscale."
+        )
+    return lines
 
 
 def summarise(frame: pd.DataFrame, config: AppConfig) -> list[str]:

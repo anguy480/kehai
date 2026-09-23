@@ -11,6 +11,7 @@ import pytest
 
 from tests.conftest import WINTER_FOLDER, place_fake_media
 from vc_multimodal.config import AppConfig, CropBox, load_config
+from vc_multimodal.features.geometry import detect_content_box, resolve_regions
 from vc_multimodal.paths import DataRoots
 from vc_multimodal.stages import inventory as inventory_stage
 from vc_multimodal.stages import preview as stage
@@ -253,3 +254,75 @@ def test_a_session_that_cannot_be_decoded_is_reported_and_the_run_continues(
     assert [o.session_id for o in report.succeeded] == [28]
     assert stage.preview_path(roots, 28, "jpg").exists()
     assert not stage.preview_path(roots, 29, "jpg").exists()
+
+
+# ---------------------------------------------------------------------------
+# annotated regions
+#
+# A label region OCR reads is a guess until someone can see where it landed.
+# The recordings turned out to carry 180px letterbox bars, which put the
+# configured region inside the bottom bar.
+# ---------------------------------------------------------------------------
+def _letterboxed_frame(width: int = 1280, height: int = 720, bar: int = 180) -> np.ndarray:
+    image = np.zeros((height, width, 3), dtype=np.uint8)
+    image[bar : height - bar, :] = 120
+    return image
+
+
+def test_the_regions_are_drawn_on_a_copy(default_config: AppConfig):
+    frame = _letterboxed_frame()
+    original = frame.copy()
+    stage.draw_regions(frame, default_config, detect_content_box(frame))
+    assert np.array_equal(frame, original)
+
+
+def test_drawing_marks_the_content_area_and_the_label_regions(
+    default_config: AppConfig,
+):
+    frame = _letterboxed_frame()
+    annotated = stage.draw_regions(frame, default_config, detect_content_box(frame))
+    assert not np.array_equal(annotated, frame)
+    # Something is drawn inside the picture, not only in the bars.
+    picture = annotated[180:540]
+    assert not np.array_equal(picture, frame[180:540])
+
+
+def test_the_label_boxes_land_inside_the_picture_when_letterboxed(
+    default_config: AppConfig,
+):
+    """The whole point: without correction they sit in the bottom bar."""
+    frame = _letterboxed_frame()
+    content = detect_content_box(frame)
+    regions = resolve_regions(default_config, 1280, 720, content=content)
+    for region in regions:
+        _left, top, _width, height = region.label_pixels
+        assert top >= 180
+        assert top + height <= 540
+
+
+@pytest.mark.slow
+def test_the_sheet_is_annotated_by_default(
+    roots: DataRoots, default_config: AppConfig, make_real_media: Any
+):
+    make_real_media(28)
+
+    stage.run(default_config, roots, workers=1)
+    annotated = cv2.imread(str(stage.preview_path(roots, 28, "jpg")))
+
+    stage.run(default_config, roots, workers=1, force=True, label_regions=False)
+    plain = cv2.imread(str(stage.preview_path(roots, 28, "jpg")))
+
+    assert annotated is not None
+    assert plain is not None
+    assert annotated.shape == plain.shape
+    assert not np.array_equal(annotated, plain)
+
+
+@pytest.mark.slow
+def test_annotation_can_be_switched_off(
+    roots: DataRoots, default_config: AppConfig, make_real_media: Any
+):
+    make_real_media(28)
+    report = stage.run(default_config, roots, workers=1, label_regions=False)
+    assert report.ok
+    assert stage.preview_path(roots, 28, "jpg").exists()

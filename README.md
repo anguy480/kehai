@@ -125,8 +125,8 @@ subset.
 | --- | --- |
 | `vc doctor` | Check the environment before anything else: config validity, ffmpeg/ffprobe versions, the three roots, and whether the raw layout matches expectations. |
 | `vc inventory` | ffprobe every mp4; validate count, IDs, readability; flag duration outliers and variable frame rate. |
-| `vc preview` | Write one cropped frame per session for visual confirmation of the participant tile. |
-| `vc verify-layout` | Read the Zoom name label in each tile to check which side the psychiatrist is on, across every session. Reports counts and session IDs only; recognised text is never printed, logged or written. |
+| `vc preview` | One contact sheet per session: the whole frame with the detected content area and the computed label regions drawn on it, plus each tile as it will be cropped. `--no-label-regions` for the plain version. |
+| `vc verify-layout` | Read the Zoom name label in each tile to check which side the psychiatrist is on, across every session. Reports counts and session IDs only; recognised text is never printed, logged or written. `--debug-region` reports where every region was looked for, in fractional and pixel coordinates, with how much OCR saw there. |
 | `vc extract-audio` | Mono 16 kHz WAV per session, and a left/right channel comparison: the one stream is stereo, and any real separation would be a speaker cue that owes nothing to diarization. |
 | `vc diarize` | Who spoke when. Pluggable: `import` (existing whisper-diarization output; the preferred path), `pyannote` (local fallback), or the external `whisper-diarization` tool. Writes normalised segments to `$VC_WORK_ROOT` and a text-free QC table to `$VC_OUT_ROOT`. |
 | `vc assign-speakers` | Map diarized speakers to psychiatrist/participant via embedding similarity, cross-checked against mouth movement. |
@@ -161,6 +161,26 @@ make pilot                                  # every stage, pilot sessions only
 Global options (`--config`, `--overlay`, `--sessions`, `--workers`, `--force`,
 `--log-level`) come *before* the stage name. Exit codes distinguish a setup
 problem (2) from a stage that ran but had failing sessions (1).
+
+### Diagnosing the label regions
+
+If `vc verify-layout` reports sessions as inconclusive, the question is almost
+always whether OCR was looking in the right place:
+
+```bash
+uv run vc --sessions 28 verify-layout --debug-region   # where it looked
+uv run vc --force preview --label-regions              # and what that looks like
+```
+
+`--debug-region` prints the detected letterbox, the tile boxes and the computed
+label regions in both fractional and pixel coordinates, with the number of
+observations, how many passed the confidence threshold, and how many survived
+normalisation — never the recognised text. The same numbers are written to
+`$VC_OUT_ROOT/layout_debug.csv`, one row per region per session.
+
+On the preview sheets the orange box is the detected content area and the green
+boxes are the label regions. A green box that is not over a name is the reason
+OCR found nothing.
 
 ### Role assignment, and piloting before it exists
 
@@ -219,10 +239,14 @@ Tracked here until resolved; each is configurable rather than guessed.
   all 62 recordings, so diarization is required. Whether the stereo channels
   carry any usable separation is measured by `vc extract-audio`; see
   [ADR 10](docs/decisions/0010-measure-stereo-channel-separation.md).
-- **Video layout.** Gallery view (psychiatrist left, participant right) is
-  expected but not assumed; the participant crop is configurable in fractional
-  coordinates and confirmed by eye via `vc preview`. Resolution (1280x720) and
-  frame rate (a constant 25) are confirmed uniform across all 62.
+- **Video layout.** *Resolved.* All 62 recordings are 1280x720 at a constant
+  25 fps, with **180px letterbox bars top and bottom**: the content is two
+  640x360 tiles side by side, psychiatrist on the left. Tile fractions are
+  interpreted within the detected content area
+  (`video.letterbox_detection: auto`), because treating them as fractions of
+  the whole frame put every crop in the wrong place. Confirmed for 59 of 62
+  sessions by label OCR, with no session contradicting it; the remaining three
+  fall back to `speakers.assumed_psychiatrist_side` and are flagged.
 - **Diarization source.** Requested from the lab, and required either way: the
   single mixed audio stream means there is no per-speaker audio, so every
   speaker attribution rests on diarization. Both paths are built — `import` for

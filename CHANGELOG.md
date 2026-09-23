@@ -8,6 +8,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Label OCR found nothing in any of the 62 recordings. They carry 180px
+  letterbox bars top and bottom - the content is two 640x360 tiles side by side
+  inside a 720p frame - so a label region expressed as a fraction of the whole
+  frame landed inside the bottom bar. Tile fractions are now interpreted within
+  the detected content area (`video.letterbox_detection: auto`).
+- `speakers.label_ocr.min_recurrence` lowered from 0.50 to 0.10, set from the
+  data rather than guessed: two recurring labels appear across the cohort, each
+  covering roughly half of it, so any threshold above about 0.42 recognises
+  neither. With the letterbox fix and this threshold, 59 of 62 sessions are
+  settled by OCR, all agreeing that the psychiatrist is on the left, with no
+  session contradicting it.
+
 - A per-session failure logged a full traceback at normal level, so 62 expected
   failures (a prerequisite stage not yet run) buried the summary. The traceback
   is now at DEBUG and the error line stays.
@@ -91,6 +103,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the rates that do, rather than silently rounded: 10 fps at 25 fps native
   alternates 2- and 3-frame steps, and uneven spacing distorts anything derived
   from differences between frames with nothing to notice.
+- `vc verify-layout --debug-region`: reports the detected letterbox, tile boxes
+  and computed label regions in both fractional and pixel coordinates, with
+  observation counts, how many passed the confidence threshold and how many
+  survived normalisation, per region per session. Written to
+  `layout_debug.csv`, which has no text column by construction.
+- `vc preview --label-regions` (on by default): draws the detected content area
+  and the computed label regions on each sheet, so what OCR reads can be
+  checked by eye rather than inferred from it finding nothing.
+- `speakers.label_ocr.upscale`: enlarges the label patch before recognition,
+  since the label text is only a dozen or so pixels tall.
+- Letterbox detection and region resolution as pure geometry
+  (`features/geometry.py`).
 - `vc vad`: recovers the spans that actually contain speech. One detector pass
   over the recording, intersected with the diarized segments, with a
   `per_segment` mode kept for comparison (docs/decisions/0011). Records per

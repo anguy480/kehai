@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 from vc_multimodal.config import AppConfig, CropBox
+from vc_multimodal.features.geometry import ContentBox, detect_content_box, resolve_regions
 from vc_multimodal.ffmpeg import FfmpegTools, parse_media_info
 from vc_multimodal.io_utils import atomic_path, read_csv
 from vc_multimodal.logging_setup import get_logger
@@ -91,11 +92,52 @@ def ordered_tiles(config: AppConfig) -> tuple[tuple[str, CropBox, str], ...]:
     return tuple((name, box, roles.get(name, "unassigned")) for name, box in tiles)
 
 
+def draw_regions(
+    frame: cv2.typing.MatLike, config: AppConfig, content: ContentBox
+) -> cv2.typing.MatLike:
+    """Draw the content area and every label region onto a copy of `frame`.
+
+    This is what makes a label region checkable: OCR returning nothing says
+    only that it found nothing, whereas a box drawn in the wrong place is
+    obvious at a glance.
+    """
+    annotated = frame.copy()
+    height, width = annotated.shape[:2]
+
+    if content.detected:
+        left, top, box_w, box_h = content.box.to_pixels(width, height)
+        cv2.rectangle(annotated, (left, top), (left + box_w, top + box_h), (255, 120, 0), 2)
+        cv2.putText(
+            annotated,
+            "content area (letterbox removed)",
+            (left + 4, max(12, top + 30)),
+            _LABEL_FONT,
+            _LABEL_SCALE,
+            (255, 120, 0),
+            1,
+        )
+
+    for region in resolve_regions(config, width, height, content=content):
+        left, top, box_w, box_h = region.label_pixels
+        cv2.rectangle(annotated, (left, top), (left + box_w, top + box_h), (60, 220, 60), 2)
+        cv2.putText(
+            annotated,
+            f"label: {region.tile}",
+            (left + 3, max(10, top - 4)),
+            _LABEL_FONT,
+            _LABEL_SCALE,
+            (60, 220, 60),
+            1,
+        )
+    return annotated
+
+
 def compose_contact_sheet(
     frames: Sequence[tuple[float, np.ndarray]],
     tiles: Sequence[tuple[str, CropBox, str]],
     *,
     max_width: int,
+    config: AppConfig | None = None,
 ) -> np.ndarray:
     """Build one contact sheet from sampled frames.
 
@@ -103,6 +145,9 @@ def compose_contact_sheet(
         frames: `(timestamp, frame)` pairs, in the order they should appear.
         tiles: Tiles to crop, as returned by `ordered_tiles`.
         max_width: Width budget for the finished sheet.
+        config: When given, the detected content area and the computed label
+            regions are drawn on the full-frame column, so the regions OCR
+            actually reads can be checked by eye.
 
     Returns:
         The composed image.
@@ -120,7 +165,15 @@ def compose_contact_sheet(
     for timestamp, frame in frames:
         height, width = frame.shape[:2]
 
-        annotated = frame.copy()
+        if config is not None:
+            content = (
+                detect_content_box(frame)
+                if config.video.letterbox_detection == "auto"
+                else ContentBox(box=CropBox(x=0.0, y=0.0, width=1.0, height=1.0), detected=False)
+            )
+            annotated = draw_regions(frame, config, content)
+        else:
+            annotated = frame.copy()
         for name, box, role in tiles:
             left, top, box_w, box_h = box.to_pixels(width, height)
             cv2.rectangle(annotated, (left, top), (left + box_w, top + box_h), (0, 220, 255), 2)
@@ -205,6 +258,7 @@ def run(
     workers: int | None = None,
     force: bool = False,
     tools: FfmpegTools | None = None,
+    label_regions: bool = True,
 ) -> StageReport:
     """Write one preview sheet per session.
 
@@ -215,6 +269,8 @@ def run(
         workers: Parallel workers, or None to choose automatically.
         force: Rewrite sheets that already exist.
         tools: Located binaries; discovered if omitted.
+        label_regions: Draw the detected content area and the computed label
+            regions on each sheet, so what OCR reads can be checked by eye.
 
     Returns:
         The stage report.
@@ -256,7 +312,12 @@ def run(
                 # frame of a real recording is left on disk.
                 raw.unlink(missing_ok=True)
 
-            sheet = compose_contact_sheet(frames, tiles, max_width=config.video.preview_max_width)
+            sheet = compose_contact_sheet(
+                frames,
+                tiles,
+                max_width=config.video.preview_max_width,
+                config=config if label_regions else None,
+            )
             target = preview_path(roots, session.session_id, image_format)
             with atomic_path(target, suffix=f".{image_format}") as tmp:
                 if not cv2.imwrite(str(tmp), sheet):

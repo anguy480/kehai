@@ -405,3 +405,52 @@ def test_vad_and_turns_run_end_to_end(roots: DataRoots, make_real_media: Any, tm
     assert (roots.work / "turns" / "28.parquet").exists()
     assert (roots.work / "timeline" / "28.parquet").exists()
     assert "turn features for 1 session(s)" in turns_result.output
+
+
+# ---------------------------------------------------------------------------
+# the region diagnostic
+# ---------------------------------------------------------------------------
+@pytest.mark.slow
+def test_debug_region_reports_geometry_without_names(roots: DataRoots, make_real_media: Any):
+    make_real_media(28, duration=12.0)
+
+    result = _run("verify-layout", "--debug-region")
+
+    assert "region diagnostic" in result.output
+    assert "letterbox" in result.output
+    assert "observation(s)" in result.output
+    # Fractional and pixel coordinates both present.
+    assert "x=0." in result.output
+    assert " at (" in result.output
+    # The synthetic labels drawn into the video must not appear.
+    assert "SATO" not in result.output.upper()
+
+
+@pytest.mark.slow
+def test_the_diagnostic_is_off_by_default(roots: DataRoots, make_real_media: Any):
+    make_real_media(28, duration=12.0)
+    result = _run("verify-layout")
+    assert "region diagnostic" not in result.output
+
+
+@pytest.mark.slow
+def test_the_debug_table_is_written_and_reported(roots: DataRoots, make_real_media: Any):
+    make_real_media(28, duration=12.0)
+    result = _run("verify-layout")
+    assert (roots.out / "layout_debug.csv").exists()
+    assert "layout_debug.csv" in result.output
+
+
+@pytest.mark.slow
+def test_preview_explains_the_annotations(roots: DataRoots, make_real_media: Any):
+    make_real_media(28)
+    result = _run("preview")
+    assert "green boxes are the label regions" in result.output
+
+
+@pytest.mark.slow
+def test_preview_annotation_can_be_disabled(roots: DataRoots, make_real_media: Any):
+    make_real_media(28)
+    result = _run("--force", "preview", "--no-label-regions")
+    assert result.exit_code == 0
+    assert "green boxes" not in result.output

@@ -305,7 +305,19 @@ def inventory(ctx: typer.Context) -> None:
 
 
 @app.command()
-def preview(ctx: typer.Context) -> None:
+def preview(
+    ctx: typer.Context,
+    label_regions: Annotated[
+        bool,
+        typer.Option(
+            "--label-regions/--no-label-regions",
+            help=(
+                "Draw the detected content area and the computed label regions "
+                "on each sheet, showing exactly what label OCR reads."
+            ),
+        ),
+    ] = True,
+) -> None:
     """Write one contact sheet per session to check the participant crop by eye."""
     setup = _setup(ctx, preview_stage.STAGE)
 
@@ -316,6 +328,7 @@ def preview(ctx: typer.Context) -> None:
         workers=setup.workers,
         force=setup.force,
         tools=setup.tools,
+        label_regions=label_regions,
     )
 
     typer.echo(f"\npreviews: {preview_stage.previews_dir(setup.roots)}")
@@ -323,6 +336,12 @@ def preview(ctx: typer.Context) -> None:
         "Open them yourself and confirm: is this gallery view, and is each tile "
         "labelled with the right role?"
     )
+    if label_regions:
+        typer.echo(
+            "The orange box is the detected content area; the green boxes are the "
+            "label regions label OCR reads. If a green box is not over a name, "
+            "that is why `vc verify-layout` finds nothing."
+        )
     typer.echo("")
     _print_report(report)
 
@@ -433,7 +452,19 @@ def turns(ctx: typer.Context) -> None:
 
 
 @app.command(name="verify-layout")
-def verify_layout(ctx: typer.Context) -> None:
+def verify_layout(
+    ctx: typer.Context,
+    debug_region: Annotated[
+        bool,
+        typer.Option(
+            "--debug-region",
+            help=(
+                "Report where each tile and label region was looked for, in "
+                "fractional and pixel coordinates, with how much OCR saw there."
+            ),
+        ),
+    ] = False,
+) -> None:
     """Check which side the psychiatrist is on, by reading Zoom name labels.
 
     Reports counts and session IDs only. Recognised text is never printed,
@@ -454,6 +485,14 @@ def verify_layout(ctx: typer.Context) -> None:
         return
 
     typer.echo(f"\nwrote {result.path}")
+    if result.debug_path is not None:
+        typer.echo(f"wrote {result.debug_path}")
+
+    if debug_region:
+        typer.echo("")
+        for line in verify_layout_stage.debug_report(result.observations, setup.config):
+            typer.echo(line)
+
     typer.echo("")
     for line in verify_layout_stage.summarise(result.frame, setup.config):
         typer.echo(line)

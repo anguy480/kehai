@@ -191,6 +191,11 @@ class VideoConfig(_Base):
     """
 
     layout: Literal["gallery", "active_speaker", "unknown"]
+    # A recording may carry black bars, in which case the tiles occupy the
+    # content area rather than the whole frame, and splitting the frame in half
+    # splits the picture off-centre. "auto" detects the bars and interprets the
+    # tile fractions within what is left.
+    letterbox_detection: Literal["auto", "off"]
     tiles: Mapping[str, CropBox]
     participant_tile: str
     psychiatrist_tile: str
@@ -419,6 +424,10 @@ class LabelOcrConfig(_Base):
     # that tile. Null means search the whole tile.
     label_region: CropBox | None
     sample_times_seconds: tuple[float, ...]
+    # Name labels are small: at 1280x720 a tile is 640 wide and the label only
+    # a dozen or so pixels tall. Enlarging the patch before recognition costs
+    # almost nothing and materially helps on small text.
+    upscale: float = Field(ge=1.0, le=8.0)
     min_confidence: float = Field(ge=0.0, le=1.0)
     # A label must appear in at least this fraction of sessions to be treated as
     # the recurring one, i.e. the person present in every session.

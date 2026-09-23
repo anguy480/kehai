@@ -23,6 +23,7 @@ from tests.synth import generators as gen
 from tests.synth.fake_ocr import FakeOcr, SideScriptedOcr
 from vc_multimodal.config import AppConfig, CropBox, load_config
 from vc_multimodal.contracts import LAYOUT_SCHEMA, validate
+from vc_multimodal.features.geometry import resolve_regions
 from vc_multimodal.ffmpeg import FfmpegTools
 from vc_multimodal.ocr import get_backend
 from vc_multimodal.paths import DataRoots, discover_sessions
@@ -426,7 +427,7 @@ def test_a_unique_participant_label_lets_the_psychiatrist_be_identified(
             backend=sides[sid],
             tools=tools,
             scratch=roots.work_path("tmp", "test", str(sid)),
-        )
+        )[0]
         for sid in cohort
     }
 
@@ -604,3 +605,191 @@ def test_real_ocr_reads_the_drawn_labels_and_catches_a_swapped_tile(
     # OCR wins: the assumption does not overwrite what was found.
     decided = dict(zip(result.frame["session_id"], result.frame["decided_side"], strict=True))
     assert decided[210] == "right"
+
+
+# ---------------------------------------------------------------------------
+# the region diagnostic
+#
+# Label OCR found nothing in any of the 62 recordings and there was no way to
+# see why. The cause was geometric: 180px letterbox bars top and bottom, so a
+# label region expressed as a fraction of the whole frame landed in the bottom
+# bar. This diagnostic is what made that visible.
+# ---------------------------------------------------------------------------
+def _observation(**overrides: Any) -> stage.RegionObservations:
+    geometry = resolve_regions(load_config(DEFAULT), 1280, 720)[0]
+    defaults: dict[str, Any] = {
+        "session_id": 28,
+        "frame_width": 1280,
+        "frame_height": 720,
+        "content_detected": True,
+        "content_box": CropBox(x=0.0, y=0.25, width=1.0, height=0.5),
+        "content_bars": (0, 180, 0, 180),
+        "geometry": geometry,
+        "upscale": 3.0,
+        "n_frames_read": 3,
+        "n_observations": 3,
+        "n_above_confidence": 3,
+        "n_usable_labels": 3,
+        "max_confidence": 1.0,
+        "n_ocr_errors": 0,
+    }
+    defaults.update(overrides)
+    return stage.RegionObservations(**defaults)
+
+
+def test_the_diagnostic_reports_both_coordinate_systems(default_config: AppConfig):
+    lines = stage.debug_report([_observation()], default_config)
+    text = "\n".join(lines)
+    assert "x=0.0000" in text  # fractional
+    assert "at (" in text  # pixels
+    assert "640x" in text
+
+
+def test_the_diagnostic_reports_the_detected_letterbox(default_config: AppConfig):
+    text = "\n".join(stage.debug_report([_observation()], default_config))
+    assert "bars l=0 t=180 r=0 b=180" in text
+    assert "within this content area" in text
+
+
+def test_the_diagnostic_says_when_no_letterbox_was_found(default_config: AppConfig):
+    observation = _observation(content_detected=False, content_bars=(0, 0, 0, 0))
+    text = "\n".join(stage.debug_report([observation], default_config))
+    assert "none detected" in text
+
+
+def test_the_diagnostic_reports_observation_counts_per_region(
+    default_config: AppConfig,
+):
+    text = "\n".join(stage.debug_report([_observation()], default_config))
+    assert "3 observation(s)" in text
+    assert "3 above confidence" in text
+    assert "3 usable label(s)" in text
+    assert "max confidence 1.00" in text
+
+
+def test_the_diagnostic_reports_the_settings_that_shaped_the_read(
+    default_config: AppConfig,
+):
+    text = "\n".join(stage.debug_report([_observation()], default_config))
+    assert "letterbox detection: auto" in text
+    assert "label upscale: 3x" in text
+
+
+def test_the_diagnostic_never_contains_recognised_text(default_config: AppConfig):
+    """The diagnostic exists to be printed, so it must carry no names."""
+    text = "\n".join(stage.debug_report([_observation()], default_config))
+    for fragment in ("Sato", "sato", "Guest", "guest", DOCTOR):
+        assert fragment not in text
+
+
+def test_nothing_recognised_at_all_points_at_the_region(default_config: AppConfig):
+    observation = _observation(n_observations=0, n_above_confidence=0, n_usable_labels=0)
+    text = "\n".join(stage.debug_report([observation], default_config))
+    assert "points at the region rather than the recogniser" in text
+    assert "vc preview --label-regions" in text
+
+
+def test_text_found_but_unusable_points_at_the_thresholds(default_config: AppConfig):
+    observation = _observation(n_observations=4, n_above_confidence=0, n_usable_labels=0)
+    text = "\n".join(stage.debug_report([observation], default_config))
+    assert "min_confidence" in text or "upscale" in text
+
+
+def test_ocr_errors_are_reported(default_config: AppConfig):
+    text = "\n".join(stage.debug_report([_observation(n_ocr_errors=2)], default_config))
+    assert "2 OCR error(s)" in text
+
+
+def test_the_diagnostic_with_nothing_examined_says_so(default_config: AppConfig):
+    text = "\n".join(stage.debug_report([], default_config))
+    assert "OCR did not run" in text
+
+
+# ---------------------------------------------------------------------------
+# the machine-readable table
+# ---------------------------------------------------------------------------
+def test_the_debug_table_has_a_row_per_region_with_both_coordinate_systems():
+    frame = stage.debug_frame([_observation(), _observation(session_id=3)])
+
+    assert len(frame) == 2
+    for column in ("tile_x", "tile_px_left", "label_x", "label_px_left", "content_x"):
+        assert column in frame.columns
+    assert list(frame["session_id"]) == [3, 28]
+
+
+def test_the_debug_table_has_no_text_column():
+    """By construction: there is nowhere for a name to be written."""
+    frame = stage.debug_frame([_observation()])
+    assert not any("text" in column or "label_value" in column for column in frame.columns)
+    assert DOCTOR not in frame.to_csv(index=False)
+
+
+def test_the_debug_table_records_the_bar_thickness():
+    row = stage.debug_frame([_observation()]).iloc[0]
+    assert row["bar_top"] == 180
+    assert row["bar_bottom"] == 180
+    assert bool(row["content_detected"])
+
+
+def test_an_empty_debug_table_still_has_its_columns():
+    frame = stage.debug_frame([])
+    assert list(frame.columns) == list(stage.DEBUG_COLUMN_ORDER)
+    assert frame.empty
+
+
+# ---------------------------------------------------------------------------
+# upscaling
+# ---------------------------------------------------------------------------
+def test_a_label_patch_is_enlarged_before_recognition():
+    patch = np.zeros((20, 100, 3), dtype=np.uint8)
+    assert stage.upscaled(patch, 3.0).shape[:2] == (60, 300)
+
+
+def test_an_upscale_of_one_leaves_the_patch_alone():
+    patch = np.zeros((20, 100, 3), dtype=np.uint8)
+    assert stage.upscaled(patch, 1.0) is patch
+
+
+def test_upscaling_an_empty_patch_is_safe():
+    patch = np.zeros((0, 0, 3), dtype=np.uint8)
+    assert stage.upscaled(patch, 3.0).size == 0
+
+
+# ---------------------------------------------------------------------------
+# the stage produces the diagnostic
+# ---------------------------------------------------------------------------
+@pytest.mark.slow
+def test_the_stage_writes_the_debug_table(
+    roots: DataRoots, default_config: AppConfig, cohort: list[int]
+):
+    result = stage.run(
+        default_config, roots, workers=1, backend=SideScriptedOcr("Dr Sato", "Guest")
+    )
+
+    assert result.debug_path is not None
+    assert result.debug_path.exists()
+    # Two regions per session.
+    assert len(result.debug) == 2 * len(cohort)
+    assert result.observations
+
+
+@pytest.mark.slow
+def test_the_recorded_geometry_matches_what_was_read(
+    roots: DataRoots, default_config: AppConfig, cohort: list[int]
+):
+    """The diagnostic is only useful if it reports the regions actually used."""
+    result = stage.run(
+        default_config, roots, workers=1, backend=SideScriptedOcr("Dr Sato", "Guest")
+    )
+
+    row = result.debug.iloc[0]
+    assert row["n_frames_read"] > 0
+    assert row["label_px_width"] > 0
+    assert row["upscale"] == default_config.speakers.label_ocr.upscale
+
+
+@pytest.mark.slow
+def test_letterbox_detection_can_be_switched_off(roots: DataRoots, cohort: list[int]):
+    config = load_config(DEFAULT, overrides={"video.letterbox_detection": "off"})
+    result = stage.run(config, roots, workers=1, backend=SideScriptedOcr("Dr Sato", "Guest"))
+    assert not result.debug["content_detected"].any()
