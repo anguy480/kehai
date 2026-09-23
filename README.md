@@ -75,6 +75,17 @@ git clone <this repo> && cd vc-multimodal
 make setup          # uv sync, install pre-commit hooks, write .env
 ```
 
+`vc verify-layout` additionally needs the optional on-device OCR extra, which is
+macOS-only:
+
+```bash
+uv sync --extra ocr
+```
+
+Without it, the layout check reports every session as inconclusive and falls
+back to `speakers.assumed_psychiatrist_side`, which it tells you about. `vc
+doctor` reports whether OCR is usable.
+
 Then edit `.env` and confirm the three data roots are right.
 
 ### A note on conda and virtualenvs
@@ -101,6 +112,7 @@ a clear message if it is missing.
 | `VC_OUT_ROOT` | Outputs: inventory, previews, logs, features, handoff bundles. |
 | `VC_FFMPEG`, `VC_FFPROBE` | Absolute binary paths; fall back to `PATH`. |
 | `HF_TOKEN` | Only for the optional local `pyannote` diarization backend. |
+| `VC_PSYCHIATRIST_LABELS` | Optional. Fragments of the psychiatrist's Zoom name label, for `vc verify-layout`. Normally unnecessary, and deliberately *not* in any committed config: a real name must never enter this repository. |
 
 ## Pipeline
 
@@ -114,6 +126,7 @@ subset.
 | `vc doctor` | Check the environment before anything else: config validity, ffmpeg/ffprobe versions, the three roots, and whether the raw layout matches expectations. |
 | `vc inventory` | ffprobe every mp4; validate count, IDs, readability; flag duration outliers and variable frame rate. |
 | `vc preview` | Write one cropped frame per session for visual confirmation of the participant tile. |
+| `vc verify-layout` | Read the Zoom name label in each tile to check which side the psychiatrist is on, across every session. Reports counts and session IDs only; recognised text is never printed, logged or written. |
 | `vc extract-audio` | Mono 16 kHz WAV per session (one per audio stream). |
 | `vc diarize` | Pluggable: `import` (existing whisper-diarization output), `pyannote`, or external `whisper-diarization`. |
 | `vc assign-speakers` | Map diarized speakers to psychiatrist/participant via embedding similarity, cross-checked against mouth movement. |
@@ -137,6 +150,7 @@ uv run vc doctor                            # is the environment ready?
 uv run vc inventory                         # all sessions, metadata only
 uv run vc --sessions 3,17,28 inventory      # a subset
 uv run vc --sessions 3,17,28 preview        # then look at the sheets yourself
+uv run vc verify-layout                     # all 62: which side is the psychiatrist?
 make pilot                                  # every stage, pilot sessions only
 ```
 
@@ -168,6 +182,12 @@ Tracked here until resolved; each is configurable rather than guessed.
   clips are supported with an optional session-to-psychiatrist map. Clips are
   made by hand into `$VC_WORK_ROOT/reference/`. See
   [ADR 8](docs/decisions/0008-speaker-assignment-embedding-with-two-tile-crosscheck.md).
+- **Which side the psychiatrist is on.** Sessions checked by hand were all
+  LEFT, recorded as `speakers.assumed_psychiatrist_side` and used only as a
+  fallback. `vc verify-layout` checks it per session by reading the Zoom name
+  labels; a disagreement is flagged, not applied. If all 62 come back left the
+  assumption is confirmed. See
+  [ADR 9](docs/decisions/0009-verify-tile-layout-by-label-ocr.md).
 - **Audio stream layout.** One mixed stream or two; determined per file by
   `vc inventory`.
 - **Video layout.** Gallery view (psychiatrist left, participant right) is

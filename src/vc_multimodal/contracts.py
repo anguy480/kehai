@@ -37,6 +37,7 @@ FEATURE_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(
 QC_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(r"^qc__[a-z0-9]+(?:_[a-z0-9]+)*$")
 
 ROLES: Final[tuple[str, ...]] = ("psychiatrist", "participant", "unknown")
+SIDES: Final[tuple[str, ...]] = ("left", "right")
 
 
 class ContractError(ValueError):
@@ -123,6 +124,28 @@ TURN_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
         "latency_s": pa.Column(float, nullable=True),
     },
 )
+
+
+LAYOUT_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
+    name="layout",
+    strict=True,
+    unique=["session_id"],
+    columns={
+        "session_id": _positive_id(),
+        "wave": pa.Column(str, nullable=False),
+        "decided_side": pa.Column(str, pa.Check.isin(SIDES), nullable=False),
+        "method": pa.Column(str, pa.Check.isin(("ocr", "assumed")), nullable=False),
+        "ocr_side": pa.Column(str, pa.Check.isin((*SIDES, "inconclusive")), nullable=False),
+        "assumed_side": pa.Column(str, pa.Check.isin(SIDES), nullable=False),
+        # Null where OCR reached no conclusion, so there was nothing to compare.
+        "matches_assumed": pa.Column("boolean", nullable=True),
+        "n_labels_left": pa.Column("Int64", pa.Check.ge(0), nullable=True),
+        "n_labels_right": pa.Column("Int64", pa.Check.ge(0), nullable=True),
+        "best_confidence": pa.Column(float, pa.Check.in_range(0.0, 1.0), nullable=True),
+        "flags": pa.Column(str, nullable=False),
+    },
+)
+# Deliberately no text column: recognised labels are people's names.
 
 
 def feature_schema(

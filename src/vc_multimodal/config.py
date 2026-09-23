@@ -24,6 +24,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 DEFAULT_CONFIG_PATH = Path("config/default.yaml")
 
+# "left" and "right" only describe a layout that has exactly two tiles.
+_SIDES_IN_A_TWO_TILE_LAYOUT = 2
+
 
 class ConfigError(ValueError):
     """Raised when configuration is missing, malformed or self-inconsistent."""
@@ -195,6 +198,39 @@ class VideoConfig(_Base):
     preview_max_width: int = Field(gt=0)
     preview_format: Literal["jpg", "png"]
 
+    def tiles_left_to_right(self) -> tuple[tuple[str, CropBox], ...]:
+        """Tiles ordered by position, so a "side" means what it looks like."""
+        return tuple(sorted(self.tiles.items(), key=lambda item: (item[1].x, item[1].y)))
+
+    @property
+    def is_two_tile(self) -> bool:
+        """Whether "left" and "right" sides are meaningful for this layout."""
+        return len(self.tiles) == _SIDES_IN_A_TWO_TILE_LAYOUT
+
+    def tile_on_side(self, side: str) -> str | None:
+        """Name of the tile on `side`, or None if sides are not meaningful.
+
+        Sides are physical positions in the frame, independent of what the tiles
+        happen to be called in config.
+        """
+        if not self.is_two_tile:
+            return None
+        ordered = self.tiles_left_to_right()
+        if side == "left":
+            return ordered[0][0]
+        if side == "right":
+            return ordered[1][0]
+        return None
+
+    def side_of_tile(self, tile: str) -> str | None:
+        """Which side `tile` sits on, or None if sides are not meaningful."""
+        if not self.is_two_tile:
+            return None
+        ordered = [name for name, _ in self.tiles_left_to_right()]
+        if tile not in ordered:
+            return None
+        return "left" if ordered.index(tile) == 0 else "right"
+
     @model_validator(mode="after")
     def _roles_must_name_real_tiles(self) -> Self:
         for role, tile in (
@@ -313,6 +349,45 @@ class MouthCrosscheckConfig(_Base):
     min_separation: float = Field(ge=0.0, le=1.0)
 
 
+class LabelOcrConfig(_Base):
+    """On-device OCR of the Zoom name label in each video tile.
+
+    Used by `vc verify-layout` to determine which side the psychiatrist is on.
+    Recognised text is compared in memory and never printed, logged or written:
+    the labels are people's names.
+
+    The psychiatrist is identified WITHOUT being named, by the fact that their
+    label recurs across sessions while participants' labels do not. An explicit
+    pattern can be supplied through the environment for the cases where that is
+    not enough, but never through a committed config file.
+    """
+
+    enabled: bool
+    backend: Literal["apple_vision", "tesseract", "none"]
+    languages: tuple[str, ...]
+    # Region within a tile holding the name label, in coordinates relative to
+    # that tile. Null means search the whole tile.
+    label_region: CropBox | None
+    sample_times_seconds: tuple[float, ...]
+    min_confidence: float = Field(ge=0.0, le=1.0)
+    # A label must appear in at least this fraction of sessions to be treated as
+    # the recurring one, i.e. the person present in every session.
+    min_recurrence: float = Field(gt=0.0, le=1.0)
+    # Name of an environment variable holding optional explicit label patterns,
+    # comma-separated. Never a value: a real name does not belong in this repo.
+    psychiatrist_label_env: str
+
+    @model_validator(mode="after")
+    def _needs_at_least_one_timestamp(self) -> Self:
+        if self.enabled and not self.sample_times_seconds:
+            msg = "label_ocr.sample_times_seconds must list at least one timestamp"
+            raise ValueError(msg)
+        if self.enabled and not self.languages:
+            msg = "label_ocr.languages must list at least one language"
+            raise ValueError(msg)
+        return self
+
+
 class SpeakerAssignConfig(_Base):
     """How diarized speaker labels become roles.
 
@@ -324,6 +399,12 @@ class SpeakerAssignConfig(_Base):
 
     embedding_model: str
     embedding_token_env: str
+    # Which side the psychiatrist is expected to be on. A default derived from
+    # the sessions checked by hand, not a guarantee: it is used only where OCR
+    # is unavailable or inconclusive, and any disagreement with OCR is recorded
+    # as a QC flag rather than silently overriding it.
+    assumed_psychiatrist_side: Literal["left", "right"]
+    label_ocr: LabelOcrConfig
     reference_clips: tuple[ReferenceClip, ...]
     session_psychiatrist_map: str | None
     min_margin: float = Field(ge=0.0)

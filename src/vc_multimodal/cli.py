@@ -22,6 +22,7 @@ from vc_multimodal.config import DEFAULT_CONFIG_PATH, AppConfig, ConfigError, lo
 from vc_multimodal.contracts import ContractError
 from vc_multimodal.ffmpeg import FfmpegError, FfmpegTools
 from vc_multimodal.logging_setup import configure_logging, log_file_path
+from vc_multimodal.ocr import OcrError, get_backend
 from vc_multimodal.paths import (
     DataRoots,
     PathError,
@@ -33,6 +34,7 @@ from vc_multimodal.paths import (
 from vc_multimodal.runner import StageReport
 from vc_multimodal.stages import inventory as inventory_stage
 from vc_multimodal.stages import preview as preview_stage
+from vc_multimodal.stages import verify_layout as verify_layout_stage
 
 app = typer.Typer(
     name="vc",
@@ -228,6 +230,21 @@ def doctor(ctx: typer.Context) -> None:
         _fail(str(exc))
         return
 
+    ocr_config = config.speakers.label_ocr
+    if ocr_config.enabled:
+        engine = get_backend(ocr_config.backend)
+        if engine.available():
+            typer.echo(f"label OCR: {engine.name} ({engine.version()})")
+        else:
+            reason = getattr(engine, "unavailable_reason", lambda: "unavailable")()
+            typer.secho(f"label OCR: {engine.name} unavailable - {reason}", fg=typer.colors.YELLOW)
+            typer.echo(
+                "  `vc verify-layout` will fall back to "
+                f"speakers.assumed_psychiatrist_side ({config.speakers.assumed_psychiatrist_side})"
+            )
+    else:
+        typer.echo("label OCR: disabled in config")
+
     try:
         roots = resolve_roots()
     except PathError as exc:
@@ -302,6 +319,35 @@ def preview(ctx: typer.Context) -> None:
     )
     typer.echo("")
     _print_report(report)
+
+
+@app.command(name="verify-layout")
+def verify_layout(ctx: typer.Context) -> None:
+    """Check which side the psychiatrist is on, by reading Zoom name labels.
+
+    Reports counts and session IDs only. Recognised text is never printed,
+    logged or written: the labels are people's names.
+    """
+    setup = _setup(ctx, verify_layout_stage.STAGE)
+
+    try:
+        result = verify_layout_stage.run(
+            setup.config,
+            setup.roots,
+            session_ids=setup.session_ids,
+            workers=setup.workers,
+            tools=setup.tools,
+        )
+    except (OcrError, ContractError) as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo(f"\nwrote {result.path}")
+    typer.echo("")
+    for line in verify_layout_stage.summarise(result.frame, setup.config):
+        typer.echo(line)
+    typer.echo("")
+    _print_report(result.report)
 
 
 if __name__ == "__main__":  # pragma: no cover - module entry point

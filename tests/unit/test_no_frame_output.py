@@ -22,10 +22,19 @@ SRC = Path(__file__).resolve().parents[2] / "src" / "vc_multimodal"
 # Calls that would put a frame on screen. Forbidden everywhere.
 DISPLAY_CALLS = ("imshow", "namedWindow", "waitKey", "startWindowThread")
 
-# Calls that would persist a frame or a video. Forbidden outside the preview
-# stage, which is the one command whose whole purpose is a single still frame.
+# Calls that would persist a frame or a video. Forbidden everywhere except the
+# specific call each module below is allowed, so widening one exception cannot
+# quietly widen the others.
 WRITE_CALLS = ("imwrite", "VideoWriter", "imencode")
-WRITE_ALLOWLIST = {"stages/preview.py"}
+WRITE_ALLOWLIST: dict[str, frozenset[str]] = {
+    # `vc preview` exists to write one still frame per session for a human to
+    # look at. It may write an image; it may not encode one for anything else.
+    "stages/preview.py": frozenset({"imwrite"}),
+    # The tesseract backend encodes a frame to PNG bytes IN MEMORY and hands
+    # them to the binary on stdin. Nothing reaches the filesystem. It may not
+    # call imwrite.
+    "ocr/tesseract.py": frozenset({"imencode"}),
+}
 
 
 def _modules() -> list[Path]:
@@ -50,10 +59,23 @@ def test_module_never_displays_a_frame(module: Path) -> None:
 
 
 @pytest.mark.parametrize("module", _modules(), ids=_relpath)
-def test_module_never_writes_images_outside_preview(module: Path) -> None:
-    if _relpath(module) in WRITE_ALLOWLIST:
-        pytest.skip("preview stage is the one place a still frame may be written")
-    assert _offenders(module, WRITE_CALLS) == []
+def test_module_only_makes_the_image_output_call_it_is_allowed(module: Path) -> None:
+    allowed = WRITE_ALLOWLIST.get(_relpath(module), frozenset())
+    forbidden = tuple(call for call in WRITE_CALLS if call not in allowed)
+    assert _offenders(module, forbidden) == []
+
+
+def test_the_allowlist_only_covers_modules_that_exist() -> None:
+    """A stale entry would silently permit image output in a renamed module."""
+    existing = {_relpath(path) for path in _modules()}
+    assert set(WRITE_ALLOWLIST) <= existing
+
+
+@pytest.mark.parametrize("module", sorted(WRITE_ALLOWLIST), ids=lambda name: name)
+def test_each_allowlisted_module_actually_makes_its_allowed_call(module: str) -> None:
+    """Otherwise the exception outlives the reason for it."""
+    path = SRC / module
+    assert set(_offenders(path, WRITE_CALLS)) == set(WRITE_ALLOWLIST[module])
 
 
 def test_the_check_itself_can_fail(tmp_path: Path) -> None:

@@ -33,6 +33,19 @@ PARTICIPANT = "SPEAKER_01"
 SPEAKER_TONE_HZ: dict[str, float] = {PSYCHIATRIST: 110.0, PARTICIPANT: 220.0}
 SPEAKER_TILE: dict[str, str] = {PSYCHIATRIST: "left", PARTICIPANT: "right"}
 
+# Zoom-style name labels drawn in the bottom-left of each tile, so the label-OCR
+# path can be exercised. Obviously fake, Latin-only: the Hershey fonts OpenCV
+# ships cannot render Japanese, and these only have to be readable and
+# consistent, not realistic. The psychiatrist's label is the same in every
+# session and each participant's is unique, which is the structure that lets
+# `vc verify-layout` identify the psychiatrist without being told any name.
+PSYCHIATRIST_LABEL = "DR SATO"
+
+
+def participant_label(session_id: int) -> str:
+    """The unique label drawn in the participant's tile."""
+    return f"GUEST {session_id:03d}"
+
 
 @dataclass(frozen=True, slots=True)
 class Utterance:
@@ -61,6 +74,21 @@ class SyntheticSession:
     fps: float = 10.0
     sample_rate: int = 16000
     speakers: tuple[str, str] = (PSYCHIATRIST, PARTICIPANT)
+    draw_labels: bool = True
+    swap_tiles: bool = False
+
+    def tile_of(self, speaker: str) -> str:
+        """Which tile a speaker occupies, honouring `swap_tiles`."""
+        tile = SPEAKER_TILE[speaker]
+        if not self.swap_tiles:
+            return tile
+        return "right" if tile == "left" else "left"
+
+    def label_of(self, speaker: str) -> str:
+        """The name label drawn in a speaker's tile."""
+        if speaker == PSYCHIATRIST:
+            return PSYCHIATRIST_LABEL
+        return participant_label(self.session_id)
 
     def spans(self, speaker: str) -> tuple[tuple[float, float], ...]:
         """Speaking spans for one speaker."""
@@ -251,7 +279,7 @@ def write_session_video(path: Path, session: SyntheticSession) -> Path:
             frame[:, half - 1 : half + 1] = 90
 
             for speaker in session.speakers:
-                tile = SPEAKER_TILE[speaker]
+                tile = session.tile_of(speaker)
                 cx, cy = centres[tile], session.height // 2
                 cv2.circle(frame, (cx, cy), session.height // 4, (200, 180, 160), -1)
                 speaking = session.speaking_at(speaker, t)
@@ -266,6 +294,20 @@ def write_session_video(path: Path, session: SyntheticSession) -> Path:
                     (40, 20, 20),
                     -1,
                 )
+
+                if session.draw_labels:
+                    # Bottom-left of the tile, as Zoom draws it.
+                    tile_left = 0 if tile == "left" else half
+                    cv2.putText(
+                        frame,
+                        session.label_of(speaker),
+                        (tile_left + 6, session.height - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45,
+                        (250, 250, 250),
+                        1,
+                        cv2.LINE_AA,
+                    )
             writer.write(frame)
     finally:
         writer.release()

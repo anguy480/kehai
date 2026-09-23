@@ -43,7 +43,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead of quoting values derived from clinical recordings.
 - Atomic output writes and a shared per-session runner with parallelism,
   idempotent skipping and per-session failure isolation.
-- `vc doctor`: environment and raw-layout check.
+- `vc doctor`: environment and raw-layout check, including whether label OCR
+  is usable.
+- `speakers.assumed_psychiatrist_side` (default `left`), used only as a fallback
+  where label OCR is unavailable or inconclusive.
+- `vc verify-layout`: read the Zoom name label in each tile to determine which
+  side the psychiatrist is on, across every session. The psychiatrist is
+  identified without being named, by the fact that their label recurs across
+  sessions while each participant's appears once. OCR is primary; a disagreement
+  with the assumed side is recorded as a QC flag and never silently overrides
+  what OCR found. Output is counts, sides and session IDs: recognised text is
+  compared in memory and never printed, logged or written.
+- Pluggable OCR backends: `apple_vision` (default, on-device macOS Vision via
+  the optional `ocr` extra, supports Japanese), `tesseract` (external binary if
+  present), and `none`. An unavailable backend is a reported state, not an
+  error.
 - `vc inventory`: ffprobe every recording, detect the audio stream layout and
   variable frame rate, flag duration outliers robustly, and print a
   metadata-only summary. Running a subset merges with the existing table.

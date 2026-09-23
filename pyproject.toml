@@ -40,6 +40,10 @@ dependencies = [
 # Local diarization. Kept optional so neither CI nor the professor's machine
 # needs a Hugging Face token or a model download.
 pyannote = ["pyannote-audio>=3.1"]
+# On-device OCR of Zoom name labels, used by `vc verify-layout` to determine
+# which tile holds the psychiatrist. macOS only; no recognised text is ever
+# printed, logged or written. See docs/decisions/0009.
+ocr = ["pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'"]
 
 [project.scripts]
 vc = "vc_multimodal.cli:app"
@@ -107,7 +111,9 @@ ignore = [
 # The CLI is the only place allowed to write to stdout.
 "src/vc_multimodal/cli.py" = ["T20"]
 # Tests need neither docstrings nor full annotations to be useful.
-"tests/**" = ["D", "ANN", "T20", "PLR2004", "ARG"]
+# Tests deliberately contain fullwidth Japanese punctuation and letters, which
+# is exactly what the label-normalisation tests exist to cover.
+"tests/**" = ["D", "ANN", "T20", "PLR2004", "ARG", "RUF001"]
 "scripts/**" = ["T20", "D"]
 
 [tool.ruff.lint.pydocstyle]
@@ -128,6 +134,7 @@ pretty = true
 module = [
   "parselmouth.*", "silero_vad.*", "cv2.*", "mediapipe.*",
   "pyannote.*", "joblib.*", "pandera.*", "sklearn.*", "scipy.*",
+  "Quartz.*", "Vision.*", "Foundation.*", "objc.*",
 ]
 ignore_missing_imports = true
 

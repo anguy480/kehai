@@ -132,6 +132,52 @@ speakers:
   embedding_model: "pyannote/embedding"
   embedding_token_env: "HF_TOKEN"
 
+  # Which side of the frame the psychiatrist is expected to be on. Set from
+  # sessions checked by hand, so treat it as a DEFAULT, not a guarantee.
+  # It is used only when label OCR is unavailable or inconclusive. When OCR
+  # does reach a conclusion, that conclusion wins and any disagreement with
+  # this value is recorded as a QC flag rather than silently overridden.
+  # Run `vc verify-layout` to check it across all sessions.
+  assumed_psychiatrist_side: "left"
+
+  label_ocr:
+    # Reads the Zoom name label in each tile to decide which side the
+    # psychiatrist is on. Recognised text is compared in memory only: it is
+    # never printed, logged or written to any file, because the labels are
+    # people's names.
+    enabled: true
+
+    # "apple_vision" runs on-device on macOS via the Vision framework and needs
+    # the optional `ocr` extra (`uv sync --extra ocr`). "tesseract" uses an
+    # external binary if one is installed. "none" disables OCR, which makes
+    # every session inconclusive and falls back to assumed_psychiatrist_side.
+    backend: "apple_vision"
+    languages: ["ja-JP", "en-US"]
+
+    # Where the name label sits WITHIN a tile, in coordinates relative to that
+    # tile. Zoom draws it in the bottom-left corner. UNCONFIRMED: check against
+    # the `vc preview` sheets and widen if labels are being missed. Null
+    # searches the whole tile, which is slower and noisier.
+    label_region:
+      x: 0.0
+      y: 0.82
+      width: 0.6
+      height: 0.18
+
+    sample_times_seconds: [60.0, 300.0, 540.0]
+    min_confidence: 0.30
+
+    # The psychiatrist is identified without ever being named: their label is
+    # the one that recurs across sessions, while each participant's appears
+    # once. A label must show up in at least this fraction of sessions to count
+    # as the recurring one.
+    min_recurrence: 0.50
+
+    # Optional explicit label patterns, comma-separated, read from THIS
+    # environment variable (set it in .env). Only the variable name lives here:
+    # a real person's name must never be committed to this repository.
+    psychiatrist_label_env: "VC_PSYCHIATRIST_LABELS"
+
   # One clip per psychiatrist, relative to $VC_WORK_ROOT/reference/.
   # UNCONFIRMED whether the same psychiatrist ran every session, especially
   # across the two waves, so several clips are supported.

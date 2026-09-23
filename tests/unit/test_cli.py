@@ -256,3 +256,30 @@ def test_force_moves_the_unrecognised_file_aside(roots: DataRoots, make_real_med
     backups = list(roots.out.glob("inventory.csv.bak-*"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == "28,640.5,1920,1080\n"
+
+
+# ---------------------------------------------------------------------------
+# verify-layout
+# ---------------------------------------------------------------------------
+@pytest.mark.slow
+def test_verify_layout_reports_sides_without_printing_labels(
+    roots: DataRoots, make_real_media: Any
+):
+    make_real_media(28, duration=12.0)
+    make_real_media(3, folder="January 17 2026", duration=12.0)
+
+    result = _run("verify-layout")
+
+    assert (roots.out / "layout.csv").exists()
+    assert "psychiatrist side, as found by label OCR" in result.output
+    assert "assumed psychiatrist side: left" in result.output
+    # Labels drawn into the synthetic video, which OCR may well have read.
+    assert "SATO" not in result.output.upper()
+    assert "GUEST" not in result.output.upper()
+
+
+@pytest.mark.slow
+def test_doctor_reports_whether_label_ocr_is_usable(roots: DataRoots, make_real_media: Any):
+    make_real_media(28)
+    result = _run("doctor")
+    assert "label OCR:" in result.output
