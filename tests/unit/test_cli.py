@@ -454,3 +454,50 @@ def test_preview_annotation_can_be_disabled(roots: DataRoots, make_real_media: A
     result = _run("--force", "preview", "--no-label-regions")
     assert result.exit_code == 0
     assert "green boxes" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# prosody
+# ---------------------------------------------------------------------------
+@pytest.mark.slow
+def test_prosody_requires_vad_first(roots: DataRoots, make_real_media: Any):
+    make_real_media(28)
+    result = _run("prosody")
+    assert result.exit_code == EXIT_STAGE_FAILED
+    assert "vc vad" in result.output
+
+
+@pytest.mark.slow
+def test_prosody_measures_participant_speech(
+    roots: DataRoots, make_real_media: Any, tmp_path: Path
+):
+    """Speech spans are written directly: Silero rejects synthetic tones."""
+    session = gen.alternating_session(
+        28, n_turns=8, turn_s=6.0, gap_s=1.0, lead_in_s=1.0, duration=58.0
+    )
+    place_fake_media(roots.data, WINTER_FOLDER, [28])
+    gen.write_wav(
+        roots.work_path("audio", "28.wav"),
+        gen.voiced_session_waveform(session),
+        session.sample_rate,
+    )
+    frame = pd.DataFrame(
+        [(28, u.speaker, u.start, u.end) for u in session.utterances],
+        columns=["session_id", "speaker", "start_s", "end_s"],
+    )
+    frame["session_id"] = frame["session_id"].astype("int64")
+    frame["speaker"] = frame["speaker"].astype("string")
+    for column in ("start_s", "end_s"):
+        frame[column] = frame[column].astype("float64")
+    frame.to_parquet(roots.work_path("speech", "28.parquet"), index=False)
+    pd.DataFrame(
+        [(28, "SPEAKER_00", "psychiatrist"), (28, "SPEAKER_01", "participant")],
+        columns=["session_id", "speaker", "role"],
+    ).to_csv(roots.work / "roles.csv", index=False)
+
+    result = _run("prosody")
+
+    assert result.exit_code == 0
+    assert (roots.out / "prosody_features.csv").exists()
+    assert "F0 variability (semitones)" in result.output
+    assert "each speaker's own median" in result.output

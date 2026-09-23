@@ -121,6 +121,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   since the label text is only a dozen or so pixels tall.
 - Letterbox detection and region resolution as pure geometry
   (`features/geometry.py`).
+- `vc prosody`: participant prosody via Praat, with overlapping speech
+  excluded and stretches too short to measure discarded. Twelve features: F0
+  variability, IQR, range and frame-to-frame movement, all in semitones
+  relative to that speaker's own median so absolute pitch differences cannot
+  dominate (docs/decisions/0005); voiced fraction; intensity mean, spread and
+  range; jitter; shimmer; harmonics-to-noise; and an intensity-peak speech-rate
+  proxy, named as a proxy. Statistics are pooled over frames rather than
+  averaged over spans, so a twenty-second answer does not count the same as a
+  half-second interjection. A missing measure is None, never zero.
+  `prosody.opensmile` is a documented extension point that reports why it is
+  not implemented: eGeMAPSv02 is 88 features, which would overrun the budget
+  for 62 sessions several times over.
 - `vc vad`: recovers the spans that actually contain speech. One detector pass
   over the recording, intersected with the diarized segments, with a
   `per_segment` mode kept for comparison (docs/decisions/0011). Records per

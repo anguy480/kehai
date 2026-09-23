@@ -132,7 +132,7 @@ subset.
 | `vc assign-speakers` | Map diarized speakers to psychiatrist/participant via embedding similarity, cross-checked against mouth movement. |
 | `vc vad` | Silero VAD to recover true speech boundaries: one pass over the recording, intersected with the diarized segments. Reports how much segment time was actually silence. |
 | `vc turns` | Turns, response latency, pauses, speaking-time ratio, overlap, and the speaking/listening timeline the facial stages consume. Requires a role mapping and refuses to guess one. |
-| `vc prosody` | Participant speech only, overlaps excluded: F0 in semitones re: own median, intensity, jitter, shimmer, speech-rate proxy. |
+| `vc prosody` | Participant speech only, overlapping speech excluded: F0 in semitones relative to that speaker's own median, intensity, jitter, shimmer, harmonics-to-noise and a speech-rate proxy, via Praat. Requires a role mapping. |
 | `vc face` | Sample, crop, landmark (MediaPipe by default; OpenFace CSV importer available); drop low-confidence frames. |
 | `vc aggregate` | One row per session, facial features split by participant-speaking vs -listening. |
 | `vc handoff` | Build the bundle: features, feature dictionary, QC report, manifest, professor-facing README. |
@@ -155,6 +155,7 @@ uv run vc extract-audio                     # mono 16 kHz + the stereo probe
 uv run vc --sessions 28 diarize             # check one session before all 62
 uv run vc vad                               # refine segments into real speech
 uv run vc turns                             # needs a role mapping; see below
+uv run vc prosody                           # participant prosody, same mapping
 make pilot                                  # every stage, pilot sessions only
 ```
 
