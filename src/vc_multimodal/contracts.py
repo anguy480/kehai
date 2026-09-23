@@ -126,6 +126,29 @@ TURN_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
 )
 
 
+DIARIZATION_QC_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
+    name="diarization_qc",
+    strict=True,
+    unique=["session_id"],
+    columns={
+        "session_id": _positive_id(),
+        "wave": pa.Column(str, nullable=False),
+        "backend": pa.Column(str, nullable=False),
+        "n_segments": pa.Column("Int64", pa.Check.ge(0), nullable=False),
+        "n_speakers": pa.Column("Int64", pa.Check.ge(0), nullable=False),
+        # Canonical labels such as "SPEAKER_00;SPEAKER_01". Not content.
+        "speakers": pa.Column(str, nullable=False),
+        "segment_seconds": pa.Column(float, pa.Check.ge(0.0), nullable=False),
+        "covered_seconds": pa.Column(float, pa.Check.ge(0.0), nullable=False),
+        "overlap_seconds": pa.Column(float, pa.Check.ge(0.0), nullable=False),
+        "coverage_fraction": pa.Column(float, pa.Check.ge(0.0), nullable=True),
+        "has_text": pa.Column("boolean", nullable=False),
+        "flags": pa.Column(str, nullable=False),
+    },
+)
+# No text column: the transcript stays in $VC_WORK_ROOT.
+
+
 AUDIO_QC_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
     name="audio_qc",
     strict=True,

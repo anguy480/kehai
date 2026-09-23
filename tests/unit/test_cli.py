@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 import vc_multimodal
 from tests.conftest import WINTER_FOLDER, place_fake_media
+from tests.synth import generators as gen
 from vc_multimodal import ffmpeg as ffmpeg_module
 from vc_multimodal import paths
 from vc_multimodal.cli import EXIT_SETUP_ERROR, EXIT_STAGE_FAILED, app
@@ -312,3 +313,42 @@ def test_extract_audio_exits_non_zero_when_a_session_fails(roots: DataRoots, mak
 
     assert result.exit_code == EXIT_STAGE_FAILED
     assert "FAILED session 29" in result.output
+
+
+# ---------------------------------------------------------------------------
+# diarize
+# ---------------------------------------------------------------------------
+@pytest.mark.slow
+def test_diarize_without_an_import_dir_is_a_clean_setup_error(
+    roots: DataRoots, make_real_media: Any
+):
+    """The shipped config leaves this unset, since the source is unresolved."""
+    make_real_media(28)
+
+    result = _run("diarize")
+
+    assert result.exit_code == EXIT_SETUP_ERROR
+    assert "import_dir" in result.output
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.slow
+def test_diarize_reads_imported_output_and_reports_without_transcripts(
+    roots: DataRoots, make_real_media: Any, tmp_path: Path
+):
+    _, session = make_real_media(28, duration=18.0)
+    import_dir = roots.work / "diarization"
+    import_dir.mkdir(parents=True, exist_ok=True)
+    gen.write_srt(import_dir / "28.srt", session)
+
+    overlay = tmp_path / "diar.yaml"
+    overlay.write_text('diarization:\n  import_dir: "diarization"\n', encoding="utf-8")
+
+    result = runner.invoke(app, ["--config", DEFAULT, "--overlay", str(overlay), "diarize"])
+
+    assert result.exit_code == 0
+    assert (roots.work / "segments" / "28.parquet").exists()
+    assert (roots.out / "diarization_qc.csv").exists()
+    assert "speakers per session" in result.output
+    # The synthetic transcript text must not reach stdout.
+    assert "turn 0" not in result.output

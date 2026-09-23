@@ -20,6 +20,7 @@ import typer
 from vc_multimodal import __version__
 from vc_multimodal.config import DEFAULT_CONFIG_PATH, AppConfig, ConfigError, load_config
 from vc_multimodal.contracts import ContractError
+from vc_multimodal.diarization import DiarizationError
 from vc_multimodal.ffmpeg import FfmpegError, FfmpegTools
 from vc_multimodal.logging_setup import configure_logging, log_file_path
 from vc_multimodal.ocr import OcrError, get_backend
@@ -32,6 +33,7 @@ from vc_multimodal.paths import (
     resolve_roots,
 )
 from vc_multimodal.runner import StageReport
+from vc_multimodal.stages import diarize as diarize_stage
 from vc_multimodal.stages import extract_audio as extract_audio_stage
 from vc_multimodal.stages import inventory as inventory_stage
 from vc_multimodal.stages import preview as preview_stage
@@ -344,6 +346,33 @@ def extract_audio(ctx: typer.Context) -> None:
     typer.echo(f"wrote {result.path}")
     typer.echo("")
     for line in extract_audio_stage.summarise(result.frame):
+        typer.echo(line)
+    typer.echo("")
+    _print_report(result.report)
+
+
+@app.command()
+def diarize(ctx: typer.Context) -> None:
+    """Work out who spoke when, using the configured diarization backend."""
+    setup = _setup(ctx, diarize_stage.STAGE)
+
+    try:
+        result = diarize_stage.run(
+            setup.config,
+            setup.roots,
+            session_ids=setup.session_ids,
+            workers=setup.workers,
+            force=setup.force,
+            tools=setup.tools,
+        )
+    except (DiarizationError, ConfigError, ContractError) as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo(f"\nsegments: {diarize_stage.segments_dir(setup.roots)}")
+    typer.echo(f"wrote {result.path}")
+    typer.echo("")
+    for line in diarize_stage.summarise(result.frame, setup.config):
         typer.echo(line)
     typer.echo("")
     _print_report(result.report)

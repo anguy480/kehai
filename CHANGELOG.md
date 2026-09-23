@@ -78,6 +78,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the rates that do, rather than silently rounded: 10 fps at 25 fps native
   alternates 2- and 3-frame steps, and uneven spacing distorts anything derived
   from differences between frames with nothing to notice.
+- `vc diarize`, with all three backends behind one interface: `import` (the
+  preferred path, reading whisper-diarization SRT or RTTM produced elsewhere),
+  `pyannote` (a local fallback, behind the optional extra), and the upstream
+  `whisper-diarization` tool invoked as an external subprocess whose output the
+  importer then reads. Speaker labels are normalised to one form, segments are
+  written to `$VC_WORK_ROOT` as Parquet, and the QC table written to
+  `$VC_OUT_ROOT` has no text column. The import backend reports every file it
+  could not match to a session, which is how a naming difference gets noticed.
 - `vc doctor`: environment and raw-layout check, including whether label OCR
   is usable.
 - `speakers.assumed_psychiatrist_side` (default `left`), used only as a fallback

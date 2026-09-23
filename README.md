@@ -128,7 +128,7 @@ subset.
 | `vc preview` | Write one cropped frame per session for visual confirmation of the participant tile. |
 | `vc verify-layout` | Read the Zoom name label in each tile to check which side the psychiatrist is on, across every session. Reports counts and session IDs only; recognised text is never printed, logged or written. |
 | `vc extract-audio` | Mono 16 kHz WAV per session, and a left/right channel comparison: the one stream is stereo, and any real separation would be a speaker cue that owes nothing to diarization. |
-| `vc diarize` | Pluggable: `import` (existing whisper-diarization output), `pyannote`, or external `whisper-diarization`. |
+| `vc diarize` | Who spoke when. Pluggable: `import` (existing whisper-diarization output; the preferred path), `pyannote` (local fallback), or the external `whisper-diarization` tool. Writes normalised segments to `$VC_WORK_ROOT` and a text-free QC table to `$VC_OUT_ROOT`. |
 | `vc assign-speakers` | Map diarized speakers to psychiatrist/participant via embedding similarity, cross-checked against mouth movement. |
 | `vc vad` | Silero VAD *inside* diarized segments to recover true speech boundaries. |
 | `vc turns` | Turns, response latency, pauses, speaking-time ratio, overlap, speaking/listening timeline. |
@@ -152,6 +152,7 @@ uv run vc --sessions 3,17,28 inventory      # a subset
 uv run vc --sessions 3,17,28 preview        # then look at the sheets yourself
 uv run vc verify-layout                     # all 62: which side is the psychiatrist?
 uv run vc extract-audio                     # mono 16 kHz + the stereo probe
+uv run vc --sessions 28 diarize             # check one session before all 62
 make pilot                                  # every stage, pilot sessions only
 ```
 
@@ -197,10 +198,16 @@ Tracked here until resolved; each is configurable rather than guessed.
   expected but not assumed; the participant crop is configurable in fractional
   coordinates and confirmed by eye via `vc preview`. Resolution (1280x720) and
   frame rate (a constant 25) are confirmed uniform across all 62.
-- **Diarization source.** Reusing the original whisper-diarization output keeps
-  the comparison against the manuscript's text features apples-to-apples;
-  re-diarizing locally would confound modality with transcript changes. See
+- **Diarization source.** Requested from the lab, and required either way: the
+  single mixed audio stream means there is no per-speaker audio, so every
+  speaker attribution rests on diarization. Both paths are built — `import` for
+  the original output (preferred, since it keeps the comparison against the
+  manuscript's text features apples-to-apples) and `pyannote` as a local
+  fallback (which would confound modality with transcript changes). Set
+  `diarization.import_dir` once the files arrive. See
   [ADR 2](docs/decisions/0002-pluggable-diarization-backends.md).
+- **Text features from the manuscript.** Requested. `vc model` joins them by
+  `session_id` when supplied; the comparison runs without them otherwise.
 
 ## Design decisions
 

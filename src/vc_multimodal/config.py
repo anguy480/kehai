@@ -336,6 +336,14 @@ class DiarizationConfig(_Base):
     import_dir: str | None
     import_patterns: tuple[str, ...]
     keep_text: bool
+    # Two speakers are expected in every session. A session with a different
+    # number is flagged rather than corrected: it usually means the diarizer
+    # split or merged a voice, which changes what every later stage measures.
+    expected_speakers: int = Field(gt=0)
+    # Fraction of the recording that diarized segments must cover before the
+    # result is trusted. whisper-diarization segments can span long silences,
+    # so high coverage is normal and LOW coverage is the warning sign.
+    min_coverage_fraction: float = Field(ge=0.0, le=1.0)
     pyannote: PyannoteConfig
     whisper_diarization: WhisperDiarizationConfig
 

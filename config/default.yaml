@@ -146,6 +146,11 @@ diarization:
   # $VC_WORK_ROOT, never printed and never included in a handoff bundle.
   keep_text: true
 
+  # Both are QC expectations, not corrections. A session that disagrees is
+  # flagged and left alone.
+  expected_speakers: 2
+  min_coverage_fraction: 0.30
+
   pyannote:
     model: "pyannote/speaker-diarization-3.1"
     revision: null          # pin once chosen; recorded in the manifest
