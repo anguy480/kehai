@@ -63,6 +63,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The feature budget is enforced by tiering rather than by a hard cap
+  (docs/decisions/0012). `aggregate.max_features` is now a sanity ceiling
+  against a bug generating hundreds of columns; what makes the analysis
+  defensible is `model.tiers`: a confirmatory set of three features per family
+  chosen on prior literature, four named tests with Holm correction, and
+  everything else reported as exploratory with its comparison count stated.
+  Nested feature selection remains inside the folds but is reported as a
+  sensitivity analysis, since it addresses leakage rather than multiplicity.
+
 - Duration flags now use a 300-1000 s window with `mad_k` 2.5, so a flag means
   "genuinely odd" rather than "not 10 to 12 minutes". The previous 8-15 min
   window flagged 10 of 62 sessions, mostly ordinary variation.

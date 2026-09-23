@@ -574,6 +574,71 @@ class HandoffConfig(_Base):
     allow_dirty: bool
 
 
+class PrimaryComparison(_Base):
+    """One confirmatory test: two feature sets compared on every target."""
+
+    name: str
+    # Names from `model.feature_sets`.
+    against: tuple[str, str]
+
+    @model_validator(mode="after")
+    def _must_compare_two_different_sets(self) -> Self:
+        if self.against[0] == self.against[1]:
+            msg = f"comparison {self.name!r} compares {self.against[0]!r} with itself"
+            raise ValueError(msg)
+        return self
+
+
+class AnalysisTiersConfig(_Base):
+    """The confirmatory/exploratory split. See docs/decisions/0012.
+
+    Counting feature columns is not what makes a small-sample analysis
+    defensible; the size of the analysis surface is. Eight feature sets against
+    two targets with two model families is 32 cross-validated estimates, and
+    the best of 32 looks good whether or not anything is there.
+
+    The confirmatory tier names a small feature set per family, chosen on prior
+    literature, and a handful of tests. Everything else is reported as
+    exploratory with the number of comparisons stated. Because the extraction
+    half never holds the labels (docs/decisions/0001), the primary set is
+    credible by construction rather than by declaration.
+    """
+
+    # Family to the features that make up the confirmatory set for it. An
+    # empty tuple means that family's primary features are not yet fixed.
+    primary_features: Mapping[str, tuple[str, ...]]
+    primary_comparisons: tuple[PrimaryComparison, ...]
+    multiplicity_correction: Literal["holm", "none"]
+    # Leave-one-out is high-variance for comparing models, so a repeated k-fold
+    # estimate is reported alongside it as a stability check. Where the two
+    # disagree, that disagreement is the result worth reporting.
+    stability_cv: Literal["none", "repeated_kfold"]
+    stability_folds: int = Field(ge=2)
+    stability_repeats: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _primary_features_must_match_their_family(self) -> Self:
+        for family, features in self.primary_features.items():
+            for feature in features:
+                if not feature.startswith(f"{family}__"):
+                    msg = (
+                        f"primary feature {feature!r} is listed under family "
+                        f"{family!r} but is not named {family}__..."
+                    )
+                    raise ValueError(msg)
+        return self
+
+    @property
+    def primary_columns(self) -> tuple[str, ...]:
+        """Every confirmatory feature, in family order."""
+        return tuple(feature for features in self.primary_features.values() for feature in features)
+
+    @property
+    def families_awaiting_primaries(self) -> tuple[str, ...]:
+        """Families whose confirmatory features have not been fixed yet."""
+        return tuple(family for family, features in self.primary_features.items() if not features)
+
+
 class ModelConfig(_Base):
     """The analysis the label holder runs.
 
@@ -591,6 +656,20 @@ class ModelConfig(_Base):
     models: tuple[Literal["elastic_net", "random_forest"], ...]
     n_permutations: int = Field(ge=0)
     text_features: str | None
+    tiers: AnalysisTiersConfig
+
+    @model_validator(mode="after")
+    def _comparisons_must_name_configured_feature_sets(self) -> Self:
+        for comparison in self.tiers.primary_comparisons:
+            unknown = [name for name in comparison.against if name not in self.feature_sets]
+            if unknown:
+                msg = (
+                    f"primary comparison {comparison.name!r} refers to feature set(s) "
+                    f"{unknown}, which are not defined in model.feature_sets "
+                    f"({sorted(self.feature_sets)})"
+                )
+                raise ValueError(msg)
+        return self
 
     @model_validator(mode="after")
     def _explicit_grouping_needs_a_map(self) -> Self:

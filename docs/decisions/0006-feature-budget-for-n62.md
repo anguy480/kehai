@@ -1,6 +1,9 @@
 # 6. Cap the feature count, with families and a naming convention
 
-- Status: accepted
+- Status: accepted; the enforcement mechanism is superseded by
+  [ADR 12](0012-tiered-analysis-not-a-feature-cap.md), which replaces the hard
+  cap with a confirmatory/exploratory split. The naming convention and family
+  structure below still stand.
 - Date: 2026-09-23
 
 ## Context
@@ -18,7 +21,10 @@ similar result more likely, not less.
 ## Decision
 
 - A hard ceiling on the number of features, configured as
-  `aggregate.max_features` (60) and enforced as an error rather than a warning.
+  `aggregate.max_features` and enforced as an error rather than a warning.
+  *(Superseded by ADR 12: the ceiling remains as a sanity check against a bug
+  generating hundreds of columns, but the analysis is made defensible by
+  tiering rather than by the count.)*
 - Roughly 50 features, allocated as: turns ~12, prosody ~14, face while the
   participant speaks ~12, face while listening ~12.
 - Every feature is named `family__name`, with the family drawn from a fixed list

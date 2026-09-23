@@ -259,6 +259,33 @@ Tracked here until resolved; each is configurable rather than guessed.
 - **Text features from the manuscript.** Requested. `vc model` joins them by
   `session_id` when supplied; the comparison runs without them otherwise.
 
+## How the analysis is kept defensible at N=62
+
+Sixty-two participants is a small sample, and the feature table will hold
+roughly 48 columns. The remedy is not a cap on the column count but a limit on
+the **analysis surface**: the eight feature sets crossed with two targets and
+two model families are 32 cross-validated estimates, and the best of 32 looks
+good whether or not anything is there.
+
+So the analysis is tiered ([ADR 12](docs/decisions/0012-tiered-analysis-not-a-feature-cap.md)):
+
+- **Confirmatory**: three features per family chosen on prior literature, and
+  four named tests - the new modalities against the text baseline, for each
+  target - with Holm correction across them.
+- **Exploratory**: everything else, reported with the number of comparisons
+  stated and no confirmatory language.
+- **Nested feature selection** stays inside the CV folds, where it belongs, but
+  is reported as a sensitivity analysis with per-fold selection frequencies
+  rather than as the primary mechanism. It solves leakage, which is a different
+  problem from multiplicity.
+
+The confirmatory set is credible **by construction, not by declaration**: under
+[ADR 1](docs/decisions/0001-handoff-split-no-labels-on-student-machine.md) the
+features are computed on a machine that has never held the questionnaire
+scores, and the handoff manifest records the commit that produced them. Tuning
+features against the outcome is not something that was avoided; it is something
+that could not have happened.
+
 ## Design decisions
 
 The reasoning behind the choices that would otherwise be invisible in the code

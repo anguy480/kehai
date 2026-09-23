@@ -351,9 +351,10 @@ aggregate:
   stats: ["mean", "sd", "median", "iqr"]
   min_speaking_s: 30.0             # too little speech to summarise reliably
   min_listening_s: 30.0
-  # Hard ceiling on the feature count. N=62, so a large feature set overfits;
-  # exceeding this is an error, not a warning. See docs/decisions/0006.
-  max_features: 60
+  # A sanity ceiling only: it exists to catch a bug that generates hundreds of
+  # columns, not to make the analysis defensible. That is done by the
+  # confirmatory/exploratory split in model.tiers. See docs/decisions/0012.
+  max_features: 80
 
 handoff:
   bundle_dir: "handoff"            # under $VC_OUT_ROOT
@@ -381,6 +382,54 @@ model:
   models: ["elastic_net", "random_forest"]
   n_permutations: 1000
   text_features: null               # path to the manuscript's text-feature CSV
+
+  # The confirmatory/exploratory split. See docs/decisions/0012.
+  #
+  # The feature sets above, crossed with two targets and two model families,
+  # are 32 cross-validated estimates on 62 observations. The best of 32 looks
+  # good whether or not anything is there, so the headline result is a small
+  # number of named tests and everything else is reported as exploratory.
+  #
+  # These features were chosen on prior literature, not on this data - and
+  # could not have been chosen on this data, because the extraction half never
+  # holds the questionnaire scores (docs/decisions/0001). The manifest records
+  # the commit, so the ordering is verifiable rather than asserted.
+  tiers:
+    primary_features:
+      turns:
+        # Response timing: the most theory-central turn measure for social
+        # communication. Reciprocity, and turn-taking coordination.
+        - "turns__latency_median"
+        - "turns__participant_speaking_ratio"
+        - "turns__overlap_ratio"
+      prosody:
+        # Reduced pitch variability is the most replicated acoustic correlate
+        # of autistic-type speech, so it is the natural primary for SRS-2;
+        # slowed speech is a long-standing marker of distress, for K6.
+        - "prosody__f0_semitone_sd"
+        - "prosody__speech_rate_proxy"
+        - "prosody__intensity_sd_db"
+      # Fixed when `vc face` lands, and therefore still before any label is
+      # seen. Left empty rather than guessed at now.
+      face_speaking: []
+      face_listening: []
+
+    # The confirmatory tests: for each target, the new modalities against the
+    # text baseline. Four tests in total, not thirty-two.
+    primary_comparisons:
+      - name: "new_modalities_vs_text"
+        against: ["all", "text"]
+      - name: "audio_vs_text"
+        against: ["audio", "text"]
+
+    multiplicity_correction: "holm"
+
+    # Leave-one-out stays primary, for comparability with the manuscript. It is
+    # high-variance for comparing models, so a repeated k-fold estimate is
+    # reported beside it; where they disagree, that is the finding.
+    stability_cv: "repeated_kfold"
+    stability_folds: 5
+    stability_repeats: 20
 
 runtime:
   workers: null                     # null: choose from CPU count
