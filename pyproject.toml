@@ -24,6 +24,9 @@ dependencies = [
   # audio / speech
   "praat-parselmouth>=0.4.4",
   "silero-vad>=5.1",
+  # silero-vad 6.x imports onnxruntime at package import time, so it is a
+  # hard requirement rather than an optional accelerator.
+  "onnxruntime>=1.18",
   "torch>=2.2",
   "torchaudio>=2.2",
   # video / face

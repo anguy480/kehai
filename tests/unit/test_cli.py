@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
@@ -352,3 +353,55 @@ def test_diarize_reads_imported_output_and_reports_without_transcripts(
     assert "speakers per session" in result.output
     # The synthetic transcript text must not reach stdout.
     assert "turn 0" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# vad and turns
+# ---------------------------------------------------------------------------
+@pytest.mark.slow
+def test_vad_requires_diarization_first(roots: DataRoots, make_real_media: Any):
+    make_real_media(28)
+    result = _run("vad")
+    assert result.exit_code == EXIT_STAGE_FAILED
+    assert "vc diarize" in result.output
+
+
+@pytest.mark.slow
+def test_turns_without_a_role_mapping_says_how_to_make_one(roots: DataRoots, make_real_media: Any):
+    """The one thing this pipeline must never guess."""
+    make_real_media(28)
+    result = _run("turns")
+
+    assert result.exit_code == EXIT_STAGE_FAILED
+    assert "Traceback" not in result.output
+    # The failure names both routes to a mapping.
+    assert "vc assign-speakers" in result.output or "vc vad" in result.output
+
+
+@pytest.mark.slow
+def test_vad_and_turns_run_end_to_end(roots: DataRoots, make_real_media: Any, tmp_path: Path):
+    """inventory -> extract-audio -> diarize -> vad -> turns, in one go."""
+    _, session = make_real_media(28, duration=22.0)
+    import_dir = roots.work / "diarization"
+    import_dir.mkdir(parents=True, exist_ok=True)
+    gen.write_srt(import_dir / "28.srt", session)
+    pd.DataFrame(
+        [(28, "SPEAKER_00", "psychiatrist"), (28, "SPEAKER_01", "participant")],
+        columns=["session_id", "speaker", "role"],
+    ).to_csv(roots.work / "roles.csv", index=False)
+
+    overlay = tmp_path / "pipeline.yaml"
+    overlay.write_text('diarization:\n  import_dir: "diarization"\n', encoding="utf-8")
+    common = ["--config", DEFAULT, "--overlay", str(overlay)]
+
+    assert runner.invoke(app, [*common, "extract-audio"]).exit_code == 0
+    assert runner.invoke(app, [*common, "diarize"]).exit_code == 0
+    assert runner.invoke(app, [*common, "vad"]).exit_code == 0
+
+    turns_result = runner.invoke(app, [*common, "turns"])
+
+    assert turns_result.exit_code == 0
+    assert (roots.out / "turn_features.csv").exists()
+    assert (roots.work / "turns" / "28.parquet").exists()
+    assert (roots.work / "timeline" / "28.parquet").exists()
+    assert "turn features for 1 session(s)" in turns_result.output

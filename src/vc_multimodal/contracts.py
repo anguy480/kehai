@@ -97,8 +97,9 @@ SPEECH_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
     strict=False,
     columns={
         "session_id": _positive_id(),
+        # Speaker, not role: voice activity is refined before roles are
+        # assigned, so this table carries diarization's anonymous labels.
         "speaker": pa.Column(str, nullable=False),
-        "role": pa.Column(str, pa.Check.isin(ROLES), nullable=False),
         "start_s": pa.Column(float, pa.Check.ge(0.0), nullable=False),
         "end_s": pa.Column(float, pa.Check.ge(0.0), nullable=False),
     },
@@ -110,6 +111,18 @@ SPEECH_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
         )
     ],
 )
+
+ROLES_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
+    name="roles",
+    strict=False,
+    unique=["session_id", "speaker"],
+    columns={
+        "session_id": _positive_id(),
+        "speaker": pa.Column(str, nullable=False),
+        "role": pa.Column(str, pa.Check.isin(ROLES), nullable=False),
+    },
+)
+
 
 TURN_SCHEMA: Final[pa.DataFrameSchema] = pa.DataFrameSchema(
     name="turns",

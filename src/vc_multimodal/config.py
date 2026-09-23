@@ -467,6 +467,11 @@ class SpeakerAssignConfig(_Base):
 class VadConfig(_Base):
     """Silero VAD parameters, applied inside diarized segments."""
 
+    # "intersect" detects over the whole recording once and intersects the
+    # result with each diarized segment; "per_segment" detects inside each
+    # segment separately. See the stage docstring for why intersect is the
+    # default despite being the less literal reading of ADR 4.
+    mode: Literal["intersect", "per_segment"]
     threshold: float = Field(gt=0.0, lt=1.0)
     min_speech_ms: int = Field(gt=0)
     min_silence_ms: int = Field(gt=0)

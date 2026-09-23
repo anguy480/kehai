@@ -32,11 +32,14 @@ from vc_multimodal.paths import (
     parse_session_spec,
     resolve_roots,
 )
+from vc_multimodal.roles import RolesUnavailableError
 from vc_multimodal.runner import StageReport
 from vc_multimodal.stages import diarize as diarize_stage
 from vc_multimodal.stages import extract_audio as extract_audio_stage
 from vc_multimodal.stages import inventory as inventory_stage
 from vc_multimodal.stages import preview as preview_stage
+from vc_multimodal.stages import turns as turns_stage
+from vc_multimodal.stages import vad as vad_stage
 from vc_multimodal.stages import verify_layout as verify_layout_stage
 
 app = typer.Typer(
@@ -373,6 +376,57 @@ def diarize(ctx: typer.Context) -> None:
     typer.echo(f"wrote {result.path}")
     typer.echo("")
     for line in diarize_stage.summarise(result.frame, setup.config):
+        typer.echo(line)
+    typer.echo("")
+    _print_report(result.report)
+
+
+@app.command()
+def vad(ctx: typer.Context) -> None:
+    """Refine the diarized segments into the spans that actually contain speech."""
+    setup = _setup(ctx, vad_stage.STAGE)
+
+    try:
+        result = vad_stage.run(
+            setup.config,
+            setup.roots,
+            session_ids=setup.session_ids,
+            workers=setup.workers,
+            force=setup.force,
+        )
+    except ContractError as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo(f"\nspeech spans: {vad_stage.speech_dir(setup.roots)}")
+    typer.echo(f"wrote {result.path}")
+    typer.echo("")
+    for line in vad_stage.summarise(result.frame):
+        typer.echo(line)
+    typer.echo("")
+    _print_report(result.report)
+
+
+@app.command()
+def turns(ctx: typer.Context) -> None:
+    """Derive turns, response latency, pauses and the speaking/listening timeline."""
+    setup = _setup(ctx, turns_stage.STAGE)
+
+    try:
+        result = turns_stage.run(
+            setup.config,
+            setup.roots,
+            session_ids=setup.session_ids,
+            workers=setup.workers,
+            force=setup.force,
+        )
+    except (RolesUnavailableError, ContractError) as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo(f"\nwrote {result.path}")
+    typer.echo("")
+    for line in turns_stage.summarise(result.frame):
         typer.echo(line)
     typer.echo("")
     _print_report(result.report)

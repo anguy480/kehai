@@ -14,7 +14,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests.conftest import SUMMER_FOLDER, WINTER_FOLDER
+from tests.conftest import (
+    SUMMER_FOLDER,
+    WINTER_FOLDER,
+    PackageLogCapture,
+)
 from tests.synth import generators as gen
 from tests.synth.fake_ocr import FakeOcr, SideScriptedOcr
 from vc_multimodal.config import AppConfig, CropBox, load_config
@@ -517,18 +521,23 @@ def test_recognised_text_reaches_neither_the_table_nor_the_log(
     roots: DataRoots,
     default_config: AppConfig,
     cohort: list[int],
-    caplog: pytest.LogCaptureFixture,
+    package_logs: PackageLogCapture,
 ):
-    """The central safety property of this stage."""
+    """The central safety property of this stage.
+
+    Uses `package_logs` rather than pytest's `caplog`: the package logger does
+    not propagate to root once logging is configured, so `caplog.text` would be
+    empty and this test would pass without checking anything.
+    """
     planted_left, planted_right = "Dr Sato Taro", "Guest Kobayashi 028"
     backend = SideScriptedOcr(left=planted_left, right=planted_right)
 
-    with caplog.at_level("DEBUG"):
-        result = stage.run(default_config, roots, workers=1, backend=backend)
+    result = stage.run(default_config, roots, workers=1, backend=backend)
 
     assert backend.calls > 0  # text really was read
+    assert package_logs.records, "the stage should log something, or this proves nothing"
     written = result.path.read_text(encoding="utf-8")
-    logged = caplog.text
+    logged = package_logs.text
     messages = " ".join(outcome.message for outcome in result.report.outcomes)
 
     for fragment in ("Sato", "Taro", "Kobayashi", "drsatotaro"):

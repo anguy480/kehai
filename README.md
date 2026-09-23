@@ -130,8 +130,8 @@ subset.
 | `vc extract-audio` | Mono 16 kHz WAV per session, and a left/right channel comparison: the one stream is stereo, and any real separation would be a speaker cue that owes nothing to diarization. |
 | `vc diarize` | Who spoke when. Pluggable: `import` (existing whisper-diarization output; the preferred path), `pyannote` (local fallback), or the external `whisper-diarization` tool. Writes normalised segments to `$VC_WORK_ROOT` and a text-free QC table to `$VC_OUT_ROOT`. |
 | `vc assign-speakers` | Map diarized speakers to psychiatrist/participant via embedding similarity, cross-checked against mouth movement. |
-| `vc vad` | Silero VAD *inside* diarized segments to recover true speech boundaries. |
-| `vc turns` | Turns, response latency, pauses, speaking-time ratio, overlap, speaking/listening timeline. |
+| `vc vad` | Silero VAD to recover true speech boundaries: one pass over the recording, intersected with the diarized segments. Reports how much segment time was actually silence. |
+| `vc turns` | Turns, response latency, pauses, speaking-time ratio, overlap, and the speaking/listening timeline the facial stages consume. Requires a role mapping and refuses to guess one. |
 | `vc prosody` | Participant speech only, overlaps excluded: F0 in semitones re: own median, intensity, jitter, shimmer, speech-rate proxy. |
 | `vc face` | Sample, crop, landmark (MediaPipe by default; OpenFace CSV importer available); drop low-confidence frames. |
 | `vc aggregate` | One row per session, facial features split by participant-speaking vs -listening. |
@@ -153,12 +153,37 @@ uv run vc --sessions 3,17,28 preview        # then look at the sheets yourself
 uv run vc verify-layout                     # all 62: which side is the psychiatrist?
 uv run vc extract-audio                     # mono 16 kHz + the stereo probe
 uv run vc --sessions 28 diarize             # check one session before all 62
+uv run vc vad                               # refine segments into real speech
+uv run vc turns                             # needs a role mapping; see below
 make pilot                                  # every stage, pilot sessions only
 ```
 
 Global options (`--config`, `--overlay`, `--sessions`, `--workers`, `--force`,
 `--log-level`) come *before* the stage name. Exit codes distinguish a setup
 problem (2) from a stage that ran but had failing sessions (1).
+
+### Role assignment, and piloting before it exists
+
+`vc turns` and everything after it need to know which diarized speaker is the
+participant. Getting that backwards would not crash anything: it would measure
+prosody on the wrong voice and invert the speaking/listening split. So nothing
+guesses. A mapping comes from one of two places:
+
+1. `$VC_WORK_ROOT/roles/<session_id>.json`, written by `vc assign-speakers`
+   along with the evidence behind it. This needs a psychiatrist reference clip
+   in `$VC_WORK_ROOT/reference/`.
+2. `$VC_WORK_ROOT/roles.csv`, written by hand, so a few sessions can be piloted
+   before that clip exists. It is an explicit human judgement rather than an
+   assumption, and sessions using it are flagged `turns_manual_role_mapping`.
+
+```csv
+session_id,speaker,role
+28,SPEAKER_00,psychiatrist
+28,SPEAKER_01,participant
+```
+
+The speaker labels come from `diarization_qc.csv`. A recorded assignment always
+takes precedence over the hand-written table.
 
 ## Development
 

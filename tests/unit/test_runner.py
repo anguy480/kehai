@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from tests.conftest import PackageLogCapture
 from vc_multimodal.runner import (
     SessionOutcome,
     StageReport,
@@ -210,3 +211,23 @@ def test_worker_count_resolution(configured: int | None, n_items: int, expected:
 def test_automatic_worker_count_is_at_least_one_and_bounded_by_the_work():
     assert resolve_workers(None, 1) == 1
     assert 1 <= resolve_workers(None, 1000) <= 1000
+
+
+def test_a_failure_logs_one_line_and_keeps_the_traceback_for_debug(
+    package_logs: PackageLogCapture,
+):
+    """62 tracebacks would bury the summary that actually matters."""
+
+    def task(item: Item) -> None:
+        msg = "run `vc diarize` first"
+        raise FileNotFoundError(msg)
+
+    run_sessions("demo", items(1), task, workers=1)
+
+    errors = package_logs.messages_at("ERROR")
+    assert any("vc diarize" in message for message in errors)
+    assert all("Traceback" not in message for message in errors)
+    # The traceback is kept, at DEBUG, for when it is actually wanted.
+    traceback_records = [record for record in package_logs.records if record.exc_info is not None]
+    assert traceback_records
+    assert all(record.levelname == "DEBUG" for record in traceback_records)

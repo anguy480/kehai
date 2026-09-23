@@ -246,9 +246,17 @@ speakers:
     min_separation: 0.10    # required gap between best and second-best tile
 
 vad:
-  # Silero VAD is applied INSIDE each diarized segment: whisper-diarization
-  # segments are known to span long silences, so their boundaries cannot be
+  # Silero VAD refines the diarized segments, whose boundaries follow
+  # transcription units and are known to span long silences, so they cannot be
   # trusted for timing features. See docs/decisions/0004.
+  #
+  # "intersect" runs the detector once over the whole recording and intersects
+  # what it finds with each diarized segment. Silero is recurrent, so its
+  # accuracy depends on surrounding context: one continuous pass is more
+  # reliable at boundaries, and far faster, than hundreds of short ones.
+  # "per_segment" detects inside each segment separately, which is the literal
+  # reading, and is kept for comparison.
+  mode: "intersect"
   threshold: 0.5
   min_speech_ms: 250
   min_silence_ms: 100

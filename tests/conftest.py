@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 from tests.synth import generators as gen
 from vc_multimodal import paths
 from vc_multimodal.config import AppConfig, load_config
+from vc_multimodal.logging_setup import ROOT_LOGGER_NAME
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -106,3 +108,52 @@ def make_real_media(raw_tree: Path, tmp_path: Path, ffmpeg_bin: str) -> Iterator
         return target, session
 
     yield factory
+
+
+class PackageLogCapture:
+    """Records emitted by the package logger during a test."""
+
+    def __init__(self) -> None:
+        self.records: list[logging.LogRecord] = []
+
+    @property
+    def text(self) -> str:
+        """Every captured message, formatted, one per line."""
+        return "\n".join(
+            f"{record.levelname} {record.name} {record.getMessage()}" for record in self.records
+        )
+
+    def messages_at(self, level: str) -> list[str]:
+        """Messages captured at exactly `level`."""
+        return [r.getMessage() for r in self.records if r.levelname == level]
+
+
+@pytest.fixture
+def package_logs() -> Iterator[PackageLogCapture]:
+    """Capture log records from the package logger.
+
+    pytest's own `caplog` cannot be used for this. `configure_logging` sets
+    `propagate = False` on the package logger, so once any stage has configured
+    logging nothing reaches the root logger, and `caplog.text` is empty. A test
+    asserting that something is *not* logged would then pass for the wrong
+    reason, which is exactly the kind of test that matters here.
+
+    This attaches a handler to the package logger itself, so it captures
+    whatever the code really emits either way.
+    """
+    capture = PackageLogCapture()
+
+    class _Handler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            capture.records.append(record)
+
+    handler = _Handler(level=logging.DEBUG)
+    logger = logging.getLogger(ROOT_LOGGER_NAME)
+    previous_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    try:
+        yield capture
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)

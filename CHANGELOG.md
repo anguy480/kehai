@@ -8,6 +8,19 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A per-session failure logged a full traceback at normal level, so 62 expected
+  failures (a prerequisite stage not yet run) buried the summary. The traceback
+  is now at DEBUG and the error line stays.
+- Tests asserting that something is *never* logged used pytest's `caplog`,
+  which captures nothing from the package logger because `configure_logging`
+  sets `propagate = False`. Those assertions were passing without checking
+  anything. A `package_logs` fixture now captures from the package logger
+  itself, and the tests assert that something *was* logged before asserting
+  what was not.
+- `onnxruntime` was missing from the dependencies: `silero-vad` 6.x imports it
+  at package import time, so it is a hard requirement rather than an optional
+  accelerator.
+
 - `vc extract-audio` accepted a truncated recording as if it were whole. ffmpeg
   exits 0 on a partially copied file, reporting the problem on stderr and simply
   stopping early, so a returncode check alone is not enough. The decoded
@@ -78,6 +91,25 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the rates that do, rather than silently rounded: 10 fps at 25 fps native
   alternates 2- and 3-frame steps, and uneven spacing distorts anything derived
   from differences between frames with nothing to notice.
+- `vc vad`: recovers the spans that actually contain speech. One detector pass
+  over the recording, intersected with the diarized segments, with a
+  `per_segment` mode kept for comparison (docs/decisions/0011). Records per
+  session what fraction of diarized segment time survived as speech, which is
+  the measurement justifying the stage. Detected speech is clipped to the audio
+  that actually decoded, so a truncated recording cannot claim speech past its
+  end.
+- `vc turns`: turns, response latency, within-turn pauses, speaking-time ratio,
+  overlap, and the speaking/listening timeline the facial stages consume.
+  Twelve features, expressed as ratios and per-minute rates rather than raw
+  totals, since session length varies from 4 to 16 minutes. Interruptions
+  (negative latency) are counted separately and never averaged into response
+  times, and a long silence is not counted as a response at all.
+- Role mapping is loaded from recorded evidence, or from a hand-written
+  `roles.csv` for piloting, and is never guessed; sessions using the manual
+  table are flagged.
+- Pure interval arithmetic (`features/spans.py`) and turn mathematics
+  (`features/turn_math.py`), both with no I/O, tested against hand-worked
+  examples.
 - `vc diarize`, with all three backends behind one interface: `import` (the
   preferred path, reading whisper-diarization SRT or RTTM produced elsewhere),
   `pyannote` (a local fallback, behind the optional extra), and the upstream

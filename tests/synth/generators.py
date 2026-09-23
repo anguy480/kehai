@@ -219,6 +219,75 @@ def session_waveform(
     return np.clip(signal, -1.0, 1.0)
 
 
+def voiced_signal(
+    seconds: float,
+    *,
+    sample_rate: int = 16000,
+    f0: float = 120.0,
+    syllable_hz: float = 4.0,
+    seed: int = 0,
+) -> np.ndarray:
+    """Synthesise something speech-like enough for a voice activity detector.
+
+    Silero is trained on speech and correctly rejects the pure tones the rest
+    of these generators use, so a tone-based recording cannot exercise it. This
+    builds a harmonic source with jitter, three formant-ish resonances and
+    syllable-rate amplitude modulation.
+
+    It is only marginally speech-like: Silero finds the onset exactly but ends
+    the span early. Tests therefore assert onset placement, which is enough to
+    prove the wiring, and use a stub detector for everything about the stage's
+    own logic.
+    """
+    rng = np.random.default_rng(seed)
+    t = np.arange(int(sample_rate * seconds)) / sample_rate
+    if t.size == 0:
+        return np.zeros(0, dtype=np.float64)
+
+    wander = rng.normal(0.0, 1.0, t.size).cumsum() / max(t.size**0.5, 1.0)
+    jitter = 1.0 + 0.02 * np.sin(2.0 * np.pi * 3.1 * t) + 0.01 * wander
+    signal = sum(
+        (1.0 / harmonic) * np.sin(2.0 * np.pi * f0 * harmonic * jitter * t)
+        for harmonic in range(1, 16)
+    )
+    for centre, bandwidth, amplitude in (
+        (700.0, 120.0, 1.0),
+        (1200.0, 160.0, 0.6),
+        (2600.0, 250.0, 0.3),
+    ):
+        noise = rng.normal(0.0, 1.0, t.size)
+        carrier = np.sin(2.0 * np.pi * centre * t + 6.0 * np.cumsum(noise) / sample_rate)
+        signal = signal + amplitude * carrier * (
+            0.3 + 0.7 * np.abs(np.sin(2.0 * np.pi * bandwidth / 100.0 * t))
+        )
+    envelope = 0.35 + 0.65 * np.clip(np.sin(2.0 * np.pi * syllable_hz * t), 0.0, None) ** 0.6
+    peak = float(np.max(np.abs(signal))) or 1.0
+    return signal / peak * envelope * 0.5
+
+
+def voiced_session_waveform(session: SyntheticSession, *, amplitude: float = 0.5) -> np.ndarray:
+    """Render a session using the speech-like signal instead of tones.
+
+    Each speaker gets a different fundamental, so they remain distinguishable.
+    """
+    n = round(session.duration * session.sample_rate)
+    out = np.zeros(n, dtype=np.float64)
+    pitches = {PSYCHIATRIST: 110.0, PARTICIPANT: 190.0}
+    for index, utterance in enumerate(session.utterances):
+        start = round(utterance.start * session.sample_rate)
+        end = min(round(utterance.end * session.sample_rate), n)
+        if end <= start:
+            continue
+        chunk = voiced_signal(
+            (end - start) / session.sample_rate,
+            sample_rate=session.sample_rate,
+            f0=pitches.get(utterance.speaker, 150.0),
+            seed=index,
+        )
+        out[start : start + chunk.size] += chunk[: end - start] * amplitude
+    return np.clip(out, -1.0, 1.0)
+
+
 def write_wav(path: Path, samples: np.ndarray, sample_rate: int) -> Path:
     """Write a 16-bit PCM WAV using only the standard library.
 

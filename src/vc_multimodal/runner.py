@@ -150,7 +150,12 @@ def _run_one(
     # A broad catch is the point: one session must never stop the run.
     except Exception as exc:
         elapsed = time.perf_counter() - started
-        logger.exception("session %s failed", session_id)
+        # A one-line error at normal level, the traceback only at DEBUG. Most
+        # per-session failures are expected conditions with a clear message -
+        # a prerequisite stage has not run, a file is missing - and dumping a
+        # traceback for each of 62 sessions buries the summary that matters.
+        logger.error("session %s failed: %s: %s", session_id, type(exc).__name__, exc)
+        logger.debug("session %s traceback", session_id, exc_info=True)
         return SessionOutcome(
             session_id=session_id,
             status="failed",
