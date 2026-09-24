@@ -451,10 +451,20 @@ model:
     primary_features:
       turns:
         # Response timing: the most theory-central turn measure for social
-        # communication. Reciprocity, and turn-taking coordination.
+        # communication. Reciprocity. And turn-taking rate.
+        #
+        # turns__overlap_ratio was the third of these until the diarization
+        # output arrived. whisper-diarization partitions time - each moment
+        # belongs to exactly one speaker - so overlap is exactly zero in all 62
+        # sessions and the feature has no variance to contribute. It is kept in
+        # the table as an honest zero recording that limitation, and the
+        # confirmatory slot went to turn-taking rate, which is also
+        # theory-central for social communication and does vary (33 to 149
+        # segments per session). Changed before any questionnaire score was
+        # seen; see docs/decisions/0012 and the CHANGELOG.
         - "turns__latency_median"
         - "turns__participant_speaking_ratio"
-        - "turns__overlap_ratio"
+        - "turns__n_per_minute"
       prosody:
         # Reduced pitch variability is the most replicated acoustic correlate
         # of autistic-type speech, so it is the natural primary for SRS-2;

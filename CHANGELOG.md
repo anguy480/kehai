@@ -80,6 +80,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `turns__overlap_ratio` is no longer a confirmatory feature. The lab's
+  whisper-diarization output partitions time - every moment belongs to exactly
+  one speaker - so pairwise overlap is exactly 0.0000 s in all 62 sessions, and
+  both overlap-derived features are structurally constant. The confirmatory slot
+  went to `turns__n_per_minute`. Both features stay in the table at zero, which
+  records the limitation rather than hiding it, and become live unchanged under a
+  diarizer that permits overlap. Made before any questionnaire score was seen;
+  see `docs/decisions/0012`.
+- `diarization.import_dir` now points at the diarization run supplied by the lab
+  (`diarization/diarizations_original` under `$VC_WORK_ROOT`), so the import
+  backend works with no override.
+
 - The facial features follow the lab's own published precedent rather than
   being chosen here (docs/decisions/0013). The action units are the house set
   used in Tanaka et al. 2025 (JMIR Form Res 9:e59261) - AU01, AU02, AU04, AU06
@@ -116,6 +128,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   evenly spaced.
 
 ### Added
+
+- `vc aggregate` detects features with no variance across sessions and reports
+  them, escalating when a constant feature holds a confirmatory slot: a
+  pre-registered slot that cannot support or refute anything needs replacing
+  before the analysis runs, not after.
+- The manuscript's text features are validated before use. The table must carry
+  an explicit session identifier - row order is refused, because a mismatched
+  order would attach each participant's text features to someone else and no
+  metric would reveal it - and any column whose name suggests a questionnaire
+  outcome stops the load rather than leaking a label into the predictor set.
 
 - Project skeleton: `src` layout, `pyproject.toml`, uv with a committed
   lockfile, ruff, mypy (strict), pytest with coverage, Makefile.

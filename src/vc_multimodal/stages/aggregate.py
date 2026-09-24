@@ -68,6 +68,9 @@ FLAG_SHORT_LISTENING: Final = "aggregate_too_little_listening"
 FLAG_NO_FACE_DATA: Final = "aggregate_no_facial_measures"
 FLAG_TOO_MANY_FEATURES: Final = "aggregate_feature_budget_exceeded"
 
+# A feature varying by less than this across sessions cannot distinguish them.
+_CONSTANT_TOLERANCE: Final = 1e-12
+
 # Beyond this many sessions per flag, print the count without the IDs.
 _MAX_LISTED_SESSIONS: Final = 12
 
@@ -301,6 +304,10 @@ class AggregateResult:
     path: Path
     feature_columns: tuple[str, ...] = ()
     tier_lines: tuple[str, ...] = field(default=())
+    #: Features taking one value across every session. They cannot contribute
+    #: to any model, and a constant confirmatory feature is a design problem
+    #: rather than a curiosity.
+    constant_features: tuple[str, ...] = ()
 
 
 def _n_present(row: Mapping[str, object], columns: Sequence[str]) -> int:
@@ -450,13 +457,44 @@ def run(
     for line in tier_lines:
         logger.info("%s: %s", STAGE, line)
 
+    constant = constant_features(frame, columns)
+    if constant:
+        logger.warning(
+            "%s: %d feature(s) take one value across every session and cannot "
+            "contribute to any model: %s",
+            STAGE,
+            len(constant),
+            list(constant),
+        )
+
     return AggregateResult(
         report=report,
         frame=frame,
         path=target,
         feature_columns=tuple(columns),
         tier_lines=tier_lines,
+        constant_features=constant,
     )
+
+
+def constant_features(frame: pd.DataFrame, columns: Sequence[str]) -> tuple[str, ...]:
+    """Features that take a single value across every session.
+
+    Worth naming rather than leaving to be discovered during modelling: a
+    constant column cannot distinguish sessions, standardising it divides by
+    zero, and one occupying a confirmatory slot wastes it. This is how the
+    overlap features were found to be structurally zero - whisper-diarization
+    partitions time, so simultaneous speech is absent from its output by
+    construction rather than by chance.
+    """
+    found: list[str] = []
+    for name in columns:
+        values = frame[name].dropna()
+        if values.empty:
+            continue
+        if float(values.max() - values.min()) <= _CONSTANT_TOLERANCE:
+            found.append(name)
+    return tuple(found)
 
 
 def _check_budget(columns: Sequence[str], config: AppConfig) -> None:
@@ -478,6 +516,29 @@ def _check_budget(columns: Sequence[str], config: AppConfig) -> None:
             f"intended, raise it deliberately and revisit docs/decisions/0012."
         )
         raise ContractError(msg)
+
+
+def _variance_lines(result: AggregateResult, config: AppConfig) -> list[str]:
+    """Report features that cannot contribute, and say when one is confirmatory."""
+    if not result.constant_features:
+        return []
+
+    lines = [
+        "",
+        f"NO VARIANCE: {len(result.constant_features)} feature(s) take one value "
+        f"across every session, so they cannot contribute to any model:",
+    ]
+    lines.extend(f"  {name}" for name in result.constant_features)
+
+    primary = set(config.model.tiers.primary_columns)
+    constant_primary = [name for name in result.constant_features if name in primary]
+    if constant_primary:
+        lines.append(
+            f"  {constant_primary} are CONFIRMATORY features. A constant confirmatory "
+            f"feature wastes a pre-registered slot and needs replacing before the "
+            f"analysis runs."
+        )
+    return lines
 
 
 def summarise(result: AggregateResult, config: AppConfig) -> list[str]:
@@ -524,6 +585,8 @@ def summarise(result: AggregateResult, config: AppConfig) -> list[str]:
     backends = sorted({name for name in frame["qc__face_backend"].dropna() if name})
     if backends:
         lines.append(f"facial backend: {', '.join(backends)}")
+
+    lines.extend(_variance_lines(result, config))
 
     lines.append("")
     lines.extend(result.tier_lines)

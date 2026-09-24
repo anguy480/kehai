@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -492,3 +493,103 @@ def test_the_summary_of_nothing(default_config: AppConfig):
         path=Path("/nowhere"),
     )
     assert stage.summarise(empty, default_config) == ["no sessions were aggregated"]
+
+
+# ---------------------------------------------------------------------------
+# features that cannot contribute
+#
+# The diarization output partitions time, so simultaneous speech is absent from
+# it by construction and the overlap features are exactly zero in all 62
+# sessions. One of them held a confirmatory slot. Noticing that by eye is not a
+# process; this is.
+# ---------------------------------------------------------------------------
+def test_a_constant_feature_is_named(default_config: AppConfig):
+    frame = pd.DataFrame(
+        {
+            "session_id": [1, 2, 3],
+            "turns__overlap_ratio": [0.0, 0.0, 0.0],
+            "turns__latency_median": [1.0, 2.0, 3.0],
+        }
+    )
+    found = stage.constant_features(frame, ["turns__overlap_ratio", "turns__latency_median"])
+    assert found == ("turns__overlap_ratio",)
+
+
+def test_a_feature_varying_only_in_the_last_bit_counts_as_constant(
+    default_config: AppConfig,
+):
+    frame = pd.DataFrame({"session_id": [1, 2], "turns__a": [1.0, 1.0 + 1e-15]})
+    assert stage.constant_features(frame, ["turns__a"]) == ("turns__a",)
+
+
+def test_an_entirely_missing_feature_is_not_called_constant(default_config: AppConfig):
+    """No values is a different problem from one value, and reads differently."""
+    frame = pd.DataFrame({"session_id": [1, 2], "turns__a": [np.nan, np.nan]})
+    assert stage.constant_features(frame, ["turns__a"]) == ()
+
+
+def test_a_single_session_is_not_evidence_of_constancy(default_config: AppConfig):
+    """With one row every feature looks constant, so the report would be noise."""
+    frame = pd.DataFrame({"session_id": [1], "turns__a": [1.0]})
+    # It is reported, but the summary is only meaningful across a cohort; the
+    # behaviour is documented rather than special-cased.
+    assert stage.constant_features(frame, ["turns__a"]) == ("turns__a",)
+
+
+def test_the_summary_calls_out_a_constant_confirmatory_feature(
+    default_config: AppConfig,
+):
+    """A wasted pre-registered slot is a design problem, not a curiosity."""
+    primary = default_config.model.tiers.primary_features["turns"][0]
+    result = stage.AggregateResult(
+        report=stage.StageReport(stage="aggregate"),
+        frame=pd.DataFrame(
+            {
+                "session_id": [1, 2],
+                "wave": ["winter", "winter"],
+                primary: [0.0, 0.0],
+                "qc__flags": ["", ""],
+                "qc__speaking_seconds": [60.0, 60.0],
+                "qc__listening_seconds": [60.0, 60.0],
+                "qc__face_backend": ["mediapipe", "mediapipe"],
+            }
+        ),
+        path=Path("/nowhere"),
+        feature_columns=(primary,),
+        constant_features=(primary,),
+    )
+
+    text = "\n".join(stage.summarise(result, default_config))
+
+    assert "NO VARIANCE" in text
+    assert "CONFIRMATORY" in text
+    assert "needs replacing" in text
+
+
+def test_the_summary_is_quiet_when_everything_varies(default_config: AppConfig):
+    result = stage.AggregateResult(
+        report=stage.StageReport(stage="aggregate"),
+        frame=pd.DataFrame(
+            {
+                "session_id": [1, 2],
+                "wave": ["winter", "winter"],
+                "turns__a": [1.0, 2.0],
+                "qc__flags": ["", ""],
+                "qc__speaking_seconds": [60.0, 60.0],
+                "qc__listening_seconds": [60.0, 60.0],
+                "qc__face_backend": ["mediapipe", "mediapipe"],
+            }
+        ),
+        path=Path("/nowhere"),
+        feature_columns=("turns__a",),
+    )
+    assert "NO VARIANCE" not in "\n".join(stage.summarise(result, default_config))
+
+
+def test_the_overlap_features_are_no_longer_confirmatory(default_config: AppConfig):
+    """They are exactly zero in every session with this diarization source."""
+    primary = set(default_config.model.tiers.primary_columns)
+    assert "turns__overlap_ratio" not in primary
+    assert "turns__interruption_rate" not in primary
+    # And the slot went to a feature that does vary.
+    assert "turns__n_per_minute" in primary

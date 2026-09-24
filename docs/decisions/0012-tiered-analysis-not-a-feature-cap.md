@@ -127,3 +127,36 @@ columns, not to make the analysis defensible. The tiering does that.
 * None of this rescues a small sample. Sixty-two participants supports a
   modest, well-specified test and no more; effect sizes are reported with
   intervals, not as a significance verdict.
+
+## Amendment, 2026-09-24: one confirmatory turn feature replaced
+
+This ADR says above that changing a primary feature later must be visible and
+dated, and that a change made after any label has been seen moves the analysis
+into the exploratory tier. This is that record, and no questionnaire score has
+been seen by anyone running this pipeline.
+
+`turns__overlap_ratio` was a confirmatory feature. When the lab's original
+whisper-diarization output arrived it turned out that the diarizer *partitions*
+time: every moment is assigned to exactly one speaker, so two speakers never
+overlap by construction. Measured across all 62 sessions, pairwise speaker
+overlap is exactly 0.0000 seconds. The feature is therefore structurally
+constant at zero, along with `turns__interruption_rate`, which is defined from
+the same quantity.
+
+A constant feature in a pre-registered slot is worse than a weak one: it cannot
+support or refute anything, and it silently spends one of the four corrected
+tests. The slot goes to `turns__n_per_minute` (turn-taking rate), which is also
+theory-central for social communication - conversational pace and reciprocity
+are part of what SRS-2 asks about - and which does vary across the cohort, 33
+to 149 diarized segments per session.
+
+Both overlap features stay in the feature table at zero rather than being
+dropped. Deleting them would hide the limitation; a column of zeros with a
+feature-dictionary entry saying why records it. If a future run uses a diarizer
+that permits overlap (pyannote does), the features become live without a schema
+change, and a note in the handoff README says so.
+
+The general lesson is automated rather than remembered: `vc aggregate` now
+detects any feature with no variance across sessions and escalates in its
+summary when that feature holds a confirmatory slot. This class of problem is
+now caught by the pipeline instead of noticed by a reader.
