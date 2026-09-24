@@ -56,12 +56,31 @@ def head_pose_from_matrix(
 ) -> tuple[float, float, float] | None:
     """Extract head pitch, yaw and roll in degrees from a 4x4 transform.
 
-    MediaPipe returns the head's transformation as a 4x4 row-major matrix. The
-    rotation is decomposed in ZYX order, which gives the intuitive reading:
-    pitch is nodding, yaw is turning, roll is tilting. Angles are in the
-    camera's frame, so they describe head orientation relative to the camera
-    and **not** where the person is looking: gaze needs an eye tracker, which
-    these recordings do not have (docs/decisions/0013).
+    MediaPipe returns the head's orientation as a 4x4 row-major rigid
+    transform: an orthonormal rotation in the top-left 3x3, the translation in
+    the last column. The rotation is decomposed as `R = Rz @ Ry @ Rx`, and each
+    angle is named for the axis it turns about in the camera's frame, where X
+    points right, Y points up and Z lies along the optical axis:
+
+    * **pitch** is rotation about X, which is nodding.
+    * **yaw** is rotation about Y, which is turning to look left or right.
+    * **roll** is rotation about Z, which is tilting towards a shoulder.
+
+    The mapping from expression to axis is the part that is easy to get wrong,
+    so it is verified rather than asserted: rotating an image in its own plane
+    is a rotation about the optical axis and must therefore appear as roll, and
+    a test does exactly that against the real model. An earlier version of this
+    function returned the three angles in the order `(yaw, roll, pitch)` while
+    labelling them `(pitch, yaw, roll)`, which no amount of internal
+    round-tripping would have caught.
+
+    The same naming is used for the OpenFace importer, whose `pose_Rx`,
+    `pose_Ry` and `pose_Rz` are already per-axis, so the two backends agree on
+    what each column means even though their values are on different scales.
+
+    These angles describe head orientation relative to the camera and **not**
+    where the person is looking: gaze needs an eye tracker, which these
+    recordings do not have (docs/decisions/0013).
 
     Returns:
         `(pitch, yaw, roll)` in degrees, or None if the matrix is unusable or
@@ -74,13 +93,15 @@ def head_pose_from_matrix(
     if not np.all(np.isfinite(rotation)):
         return None
 
-    # ZYX decomposition: -R[2,0] is sin(pitch).
-    sin_pitch = -float(rotation[2, 0])
-    if abs(sin_pitch) >= _GIMBAL_LIMIT:
+    # For R = Rz(roll) @ Ry(yaw) @ Rx(pitch): R[2,0] = -sin(yaw), so yaw is
+    # the angle that goes degenerate at +/-90 degrees, where the other two are
+    # no longer separable.
+    sin_yaw = -float(rotation[2, 0])
+    if abs(sin_yaw) >= _GIMBAL_LIMIT:
         return None
-    pitch = math.asin(sin_pitch)
-    yaw = math.atan2(float(rotation[1, 0]), float(rotation[0, 0]))
-    roll = math.atan2(float(rotation[2, 1]), float(rotation[2, 2]))
+    yaw = math.asin(sin_yaw)
+    pitch = math.atan2(float(rotation[2, 1]), float(rotation[2, 2]))
+    roll = math.atan2(float(rotation[1, 0]), float(rotation[0, 0]))
     return math.degrees(pitch), math.degrees(yaw), math.degrees(roll)
 
 

@@ -17,6 +17,7 @@ so a table mixing them is refused rather than pooled.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,7 +36,7 @@ from vc_multimodal.features.face_math import (
 from vc_multimodal.features.geometry import detect_content_box, resolve_regions
 from vc_multimodal.features.sampling import FrameSampling, SamplingError, resolve_sampling
 from vc_multimodal.ffmpeg import FfmpegError, FfmpegTools, parse_media_info
-from vc_multimodal.io_utils import read_csv, write_csv, write_parquet
+from vc_multimodal.io_utils import read_csv, write_csv, write_json, write_parquet
 from vc_multimodal.logging_setup import get_logger
 from vc_multimodal.paths import DataRoots, RawSession, discover_sessions, select_sessions
 from vc_multimodal.runner import StageReport, run_sessions
@@ -50,6 +51,21 @@ FLAG_TOO_MANY_DROPPED: Final = "face_too_many_frames_dropped"
 FLAG_NO_FACE_FOUND: Final = "face_no_frames_measured"
 FLAG_NO_LETTERBOX: Final = "face_letterbox_not_detected"
 FLAG_NO_HEAD_POSE: Final = "face_head_pose_unavailable"
+FLAG_CROP_UNSTABLE: Final = "face_crop_unstable"
+FLAG_BACKEND_MISMATCH: Final = "face_backend_changed"
+
+# Fractions of the recording at which the geometry is checked. One frame is
+# not enough: the first second can be a fade-in or a title card, and a content
+# box measured there would be applied to the whole session.
+_CROP_PROBE_FRACTIONS: Final = (0.2, 0.5, 0.8)
+
+# Crop boxes agreeing to within this fraction of the frame are the same box.
+_CROP_TOLERANCE: Final = 0.01
+
+# Fewer boxes than this cannot disagree.
+_MIN_BOXES_TO_COMPARE: Final = 2
+
+BACKEND_SIDECAR_SUFFIX: Final = ".backend.json"
 
 QC_COLUMN_ORDER: Final = (
     "session_id",
@@ -80,6 +96,44 @@ def face_dir(roots: DataRoots) -> Path:
 def face_path(roots: DataRoots, session_id: int) -> Path:
     """Where one session's per-frame measures are written."""
     return roots.work_path(FACE_DIRNAME, f"{session_id}.parquet")
+
+
+def backend_sidecar_path(roots: DataRoots, session_id: int) -> Path:
+    """Where one session's backend record is written."""
+    return roots.work_path(FACE_DIRNAME, f"{session_id}{BACKEND_SIDECAR_SUFFIX}")
+
+
+def write_backend_record(roots: DataRoots, session_id: int, backend: FaceBackend) -> Path:
+    """Record which backend measured a session, beside its measurements.
+
+    Kept next to the per-frame table rather than only in the QC table, so that
+    deleting the QC table cannot lose the one fact that makes a later table
+    safe to assemble. MediaPipe blendshape scores and OpenFace action unit
+    intensities are different scales for the same constructs, so knowing which
+    produced a session is not optional (docs/decisions/0013).
+    """
+    return write_json(
+        backend_sidecar_path(roots, session_id),
+        {
+            "session_id": session_id,
+            "backend": backend.name,
+            "backend_version": backend.version(),
+        },
+    )
+
+
+def read_backend_record(roots: DataRoots, session_id: int) -> Mapping[str, str] | None:
+    """The recorded backend for a session, or None if there is none."""
+    path = backend_sidecar_path(roots, session_id)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # pragma: no cover - defensive
+        return None
+    if not isinstance(payload, dict) or "backend" not in payload:
+        return None
+    return {str(key): str(value) for key, value in payload.items()}
 
 
 def frame_table(
@@ -135,6 +189,7 @@ def qc_record(
     sampling: FrameSampling,
     crop: CropBox,
     letterboxed: bool,
+    crop_stable: bool = True,
     config: AppConfig,
 ) -> dict[str, object]:
     """Summarise one session's facial measurement."""
@@ -151,6 +206,8 @@ def qc_record(
         flags.append(FLAG_NO_LETTERBOX)
     if detected and all(m.head is None for m in detected):
         flags.append(FLAG_NO_HEAD_POSE)
+    if not crop_stable:
+        flags.append(FLAG_CROP_UNSTABLE)
 
     return {
         "session_id": session.session_id,
@@ -205,25 +262,33 @@ class FaceResult:
     path: Path
 
 
-def _native_fps(roots: DataRoots, session: RawSession, tools: FfmpegTools) -> float | None:
-    """The recording's frame rate, from the inventory or by probing."""
+def _video_timing(
+    roots: DataRoots, session: RawSession, tools: FfmpegTools
+) -> tuple[float | None, float | None]:
+    """The recording's frame rate and duration, from the inventory or by probing.
+
+    The inventory is preferred because it is already computed for every
+    session; probing is the fallback for a session that predates it.
+    """
     path = roots.out_path("inventory.csv", create_parent=False)
     if path.exists():
         try:
             inventory = read_csv(path)
         except (OSError, ValueError):  # pragma: no cover - defensive
             inventory = None
-        if inventory is not None and {"session_id", "fps"} <= set(inventory.columns):
-            match = inventory.loc[inventory["session_id"] == session.session_id, "fps"]
-            if not match.empty and pd.notna(match.iloc[0]):
-                return float(match.iloc[0])
+        if inventory is not None and {"session_id", "fps", "duration_s"} <= set(inventory.columns):
+            match = inventory.loc[inventory["session_id"] == session.session_id]
+            if not match.empty:
+                row = match.iloc[0]
+                fps = float(row["fps"]) if pd.notna(row["fps"]) else None
+                duration = float(row["duration_s"]) if pd.notna(row["duration_s"]) else None
+                if fps is not None:
+                    return fps, duration
     try:
-        return (
-            parse_media_info(tools.probe(session.path)).duration_s
-            and parse_media_info(tools.probe(session.path)).fps
-        )
+        info = parse_media_info(tools.probe(session.path))
     except FfmpegError:
-        return None
+        return None, None
+    return info.fps, info.duration_s
 
 
 def run(
@@ -267,21 +332,27 @@ def run(
     records: dict[int, Mapping[str, object]] = {}
 
     def is_done(session: RawSession) -> bool:
-        return face_path(roots, session.session_id).exists()
+        return (
+            face_path(roots, session.session_id).exists()
+            and backend_sidecar_path(roots, session.session_id).is_file()
+        )
 
     def measure_one(session: RawSession) -> str:
-        native = _native_fps(roots, session, binaries)
+        native, duration = _video_timing(roots, session, binaries)
         try:
             sampling = resolve_sampling(native, config.face.sample_fps)
         except SamplingError as exc:
             raise FaceError(str(exc)) from exc
 
-        crop, letterboxed = _crop_for(session, config, binaries, roots)
+        crop, letterboxed, crop_stable = _crop_for(
+            session, config, binaries, roots, duration_s=duration
+        )
         measures = engine.measure_session(session, config=config, crop=crop, sampling=sampling)
         measures = apply_confidence_threshold(measures, config.face.min_confidence)
 
         table = frame_table(session.session_id, measures, config.face.unit_keys)
         write_parquet(face_path(roots, session.session_id), table)
+        write_backend_record(roots, session.session_id, engine)
 
         record = qc_record(
             session,
@@ -290,6 +361,7 @@ def run(
             sampling=sampling,
             crop=crop,
             letterboxed=letterboxed,
+            crop_stable=crop_stable,
             config=config,
         )
         records[session.session_id] = record
@@ -311,16 +383,31 @@ def run(
         notes=notes,
     )
 
-    # A skipped session keeps its recorded QC row, read back from the previous
-    # table so the backend it used is still checked against the others.
+    # A skipped session keeps its recorded QC row where one exists, and its
+    # backend is taken from the sidecar either way: that record sits beside the
+    # measurements themselves, so deleting the QC table cannot hide a session
+    # measured with the other backend.
     previous = _previous_qc(roots)
     for outcome in report.skipped:
-        if outcome.session_id in previous:
-            records[outcome.session_id] = previous[outcome.session_id]
+        recorded = read_backend_record(roots, outcome.session_id)
+        row = dict(previous.get(outcome.session_id, {}))
+        if recorded is not None:
+            row.setdefault("session_id", outcome.session_id)
+            row["backend"] = recorded["backend"]
+            row["backend_version"] = recorded.get("backend_version", "")
+        if row:
+            records[outcome.session_id] = row
 
     frame = build_frame(list(records.values()))
     require_single_backend(
         [str(name) for name in frame["backend"].tolist()], context="the face QC table"
+    )
+    # Also check every session that has measurements on disk, not only the ones
+    # in this run: a subset rerun after a backend change would otherwise leave
+    # the rest of the work tree inconsistent and unnoticed until aggregation.
+    require_single_backend(
+        [record["backend"] for record in stored_backends(roots).values()],
+        context="the stored facial measurements",
     )
     target = roots.out_path(FACE_QC_FILENAME)
     write_csv(target, frame)
@@ -329,20 +416,88 @@ def run(
     return FaceResult(report=report, frame=frame, path=target)
 
 
+def _boxes_agree(boxes: Sequence[CropBox]) -> bool:
+    """Whether every crop box is the same to within the tolerance."""
+    if len(boxes) < _MIN_BOXES_TO_COMPARE:
+        return True
+    first = boxes[0]
+    return all(
+        abs(box.x - first.x) <= _CROP_TOLERANCE
+        and abs(box.y - first.y) <= _CROP_TOLERANCE
+        and abs(box.width - first.width) <= _CROP_TOLERANCE
+        and abs(box.height - first.height) <= _CROP_TOLERANCE
+        for box in boxes[1:]
+    )
+
+
 def _crop_for(
-    session: RawSession, config: AppConfig, tools: FfmpegTools, roots: DataRoots
-) -> tuple[CropBox, bool]:
-    """Work out the participant crop from one frame of the recording."""
-    scratch = roots.work_path("tmp", STAGE, f"{session.session_id}.png")
-    try:
-        tools.extract_frame(session.path, 1.0, scratch)
-        frame = cv2.imread(str(scratch), cv2.IMREAD_COLOR)
-    finally:
-        scratch.unlink(missing_ok=True)
-    if frame is None:
-        msg = f"could not read a frame from {session.path.name} to find the crop"
+    session: RawSession,
+    config: AppConfig,
+    tools: FfmpegTools,
+    roots: DataRoots,
+    *,
+    duration_s: float | None,
+) -> tuple[CropBox, bool, bool]:
+    """Work out the participant crop, checking it across the recording.
+
+    Sampled at several points rather than once: the opening second can be a
+    fade-in or a title card, and a content box measured there would be applied
+    to every frame of the session. A layout that changes mid-session - the
+    active-speaker view this project has not ruled out for every recording -
+    shows up here as boxes that disagree.
+
+    Returns:
+        The crop, whether letterbox bars were found, and whether the geometry
+        was stable across the sampled points.
+
+    Raises:
+        FaceError: if no frame could be read at all.
+    """
+    if duration_s and duration_s > 0:
+        timestamps = [duration_s * fraction for fraction in _CROP_PROBE_FRACTIONS]
+    else:
+        timestamps = [1.0]
+
+    found: list[tuple[CropBox, bool]] = []
+    for index, timestamp in enumerate(timestamps):
+        scratch = roots.work_path("tmp", STAGE, f"{session.session_id}_{index}.png")
+        try:
+            tools.extract_frame(session.path, timestamp, scratch)
+            frame = cv2.imread(str(scratch), cv2.IMREAD_COLOR)
+        except FfmpegError:
+            continue
+        finally:
+            scratch.unlink(missing_ok=True)
+        if frame is not None:
+            found.append(participant_crop(config, frame))
+
+    if not found:
+        msg = f"could not read any frame from {session.path.name} to find the crop"
         raise FaceError(msg)
-    return participant_crop(config, frame)
+
+    boxes = [box for box, _ in found]
+    stable = _boxes_agree(boxes)
+    if not stable:
+        logger.warning(
+            "session %s: the tile geometry differs across the recording; using the "
+            "first of %d measurements and flagging it",
+            session.session_id,
+            len(boxes),
+        )
+    return boxes[0], any(letterboxed for _, letterboxed in found), stable
+
+
+def stored_backends(roots: DataRoots) -> dict[int, Mapping[str, str]]:
+    """The backend recorded for every session with measurements on disk."""
+    found: dict[int, Mapping[str, str]] = {}
+    for path in sorted(face_dir(roots).glob(f"*{BACKEND_SIDECAR_SUFFIX}")):
+        stem = path.name.removesuffix(BACKEND_SIDECAR_SUFFIX)
+        if not stem.isdigit():
+            continue
+        record = read_backend_record(roots, int(stem))
+        if record is not None:
+            found[int(stem)] = record
+    return found
 
 
 def _previous_qc(roots: DataRoots) -> dict[int, Mapping[str, object]]:

@@ -8,16 +8,21 @@ refusal to pool two backends, and the note that says a switch is a full rerun.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
+import cv2
+import mediapipe as mp
 import numpy as np
 import pandas as pd
 import pytest
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
 
 from tests.conftest import REAL_FACE_MODEL, WINTER_FOLDER, place_fake_media
 from tests.synth import generators as gen
-from vc_multimodal.config import AppConfig, load_config
+from vc_multimodal.config import AppConfig, CropBox, load_config
 from vc_multimodal.faces import (
     FaceError,
     MediaPipeBackend,
@@ -25,7 +30,7 @@ from vc_multimodal.faces import (
     get_backend,
     require_single_backend,
 )
-from vc_multimodal.features.face_math import FrameMeasure
+from vc_multimodal.features.face_math import FrameMeasure, head_pose_from_matrix
 from vc_multimodal.features.sampling import resolve_sampling
 from vc_multimodal.handoff_text import FACE_BACKEND_NOTE, GAZE_ABSENCE_NOTE, notes
 from vc_multimodal.io_utils import read_parquet
@@ -657,3 +662,271 @@ def test_the_summary_names_the_worst_session(default_config: AppConfig):
 
 def test_the_summary_of_nothing(default_config: AppConfig):
     assert stage.summarise(pd.DataFrame(), default_config) == ["no sessions were measured"]
+
+
+# ---------------------------------------------------------------------------
+# head pose, verified against the model rather than against our own convention
+#
+# The mapping from a rotation matrix to named angles is easy to get wrong and
+# impossible to catch by round-tripping: an earlier version returned the three
+# in the order (yaw, roll, pitch) while labelling them (pitch, yaw, roll), and
+# every internal test passed. Rotating an image in its own plane is a rotation
+# about the camera's optical axis, so it must appear as roll and nothing else.
+# ---------------------------------------------------------------------------
+def frontal_face_image(size: int = 480) -> np.ndarray:
+    """A crude frontal face the landmarker can find, drawn upright."""
+    image = np.full((size, size, 3), 205, np.uint8)
+    cx = cy = size // 2
+    cv2.ellipse(image, (cx, cy), (95, 125), 0, 0, 360, (212, 184, 164), -1)
+    for sign in (-1, 1):
+        eye_x = cx + sign * 38
+        cv2.ellipse(image, (eye_x, cy - 30), (17, 10), 0, 0, 360, (250, 250, 250), -1)
+        cv2.circle(image, (eye_x, cy - 30), 7, (35, 35, 45), -1)
+        cv2.ellipse(image, (eye_x, cy - 52), (20, 7), 0, 180, 360, (70, 50, 40), 3)
+    cv2.line(image, (cx, cy - 20), (cx, cy + 18), (180, 150, 135), 3)
+    cv2.ellipse(image, (cx, cy + 52), (30, 12), 0, 0, 360, (90, 55, 55), -1)
+    return image
+
+
+def _model_pose(image: np.ndarray, model: Path) -> tuple[Any, Any]:
+    """Run the real landmarker on one image, returning its matrix and angles."""
+    options = vision.FaceLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=str(model)),
+        output_face_blendshapes=True,
+        output_facial_transformation_matrixes=True,
+        num_faces=1,
+    )
+    with vision.FaceLandmarker.create_from_options(options) as landmarker:
+        result = landmarker.detect(
+            mp.Image(
+                image_format=mp.ImageFormat.SRGB,
+                data=cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
+            )
+        )
+    if not result.facial_transformation_matrixes:
+        return None, None
+    matrix = np.asarray(result.facial_transformation_matrixes[0])
+    return matrix, head_pose_from_matrix(matrix)
+
+
+@pytest.mark.slow
+def test_the_transform_really_is_a_rigid_rotation(model_available: Path):
+    """The extraction assumes an orthonormal 3x3 in the top-left, row-major."""
+    matrix, _ = _model_pose(frontal_face_image(), model_available)
+    assert matrix is not None, "the landmarker found no face to measure"
+    assert matrix.shape == (4, 4)
+
+    rotation = matrix[:3, :3]
+    assert np.allclose(rotation @ rotation.T, np.eye(3), atol=1e-3)
+    assert np.linalg.det(rotation) == pytest.approx(1.0, abs=1e-3)
+    # Translation in the last column, not the last row.
+    assert matrix[3, :] == pytest.approx([0.0, 0.0, 0.0, 1.0], abs=1e-6)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("degrees", [-20.0, -10.0, 10.0, 20.0])
+def test_an_in_plane_rotation_appears_as_roll(model_available: Path, degrees: float):
+    """Rotation about the optical axis is roll, by definition of the axes."""
+    upright = frontal_face_image()
+    _, baseline = _model_pose(upright, model_available)
+    assert baseline is not None
+
+    spin = cv2.getRotationMatrix2D((240, 240), degrees, 1.0)
+    rotated = cv2.warpAffine(upright, spin, (480, 480), borderValue=(205, 205, 205))
+    _, measured = _model_pose(rotated, model_available)
+    assert measured is not None
+
+    # Roll tracks the applied rotation, with its sign.
+    assert measured[2] - baseline[2] == pytest.approx(degrees, abs=2.0)
+    # Yaw does not: an in-plane spin is not a turn of the head.
+    assert measured[1] - baseline[1] == pytest.approx(0.0, abs=3.0)
+
+
+@pytest.mark.slow
+def test_an_upright_face_is_not_reported_as_rolled(model_available: Path):
+    """The channel that in-plane rotation moves must read near zero upright."""
+    _, angles = _model_pose(frontal_face_image(), model_available)
+    assert angles is not None
+    assert abs(angles[2]) < 5.0
+
+
+def test_both_backends_name_the_axes_the_same_way(roots: DataRoots, default_config: AppConfig):
+    """The backend is expected to change, so head_pitch must not mean one axis
+    under MediaPipe and another under OpenFace."""
+    csv_dir = roots.work / "openface"
+    path = openface_csv(csv_dir / "28.csv", n_frames=5)
+    # Rewrite the pose columns so each axis carries a distinct angle.
+    frame = pd.read_csv(path)
+    frame["pose_Rx"] = np.radians(10.0)  # about X: nodding
+    frame["pose_Ry"] = np.radians(20.0)  # about Y: turning
+    frame["pose_Rz"] = np.radians(30.0)  # about Z: tilting
+    frame.to_csv(path, index=False)
+
+    measures = OpenFaceBackend(default_config.face.openface, csv_dir=csv_dir).measure_session(
+        _session(),
+        config=default_config,
+        crop=default_config.video.tiles["right"],
+        sampling=resolve_sampling(25.0, 5.0),
+    )
+
+    pitch, yaw, roll = measures[0].head
+    assert pitch == pytest.approx(10.0, abs=1e-6)
+    assert yaw == pytest.approx(20.0, abs=1e-6)
+    assert roll == pytest.approx(30.0, abs=1e-6)
+
+    # And the same angles through the MediaPipe path give the same names.
+    matrix = np.eye(4)
+    matrix[:3, :3] = _compose(10.0, 20.0, 30.0)
+    assert head_pose_from_matrix(matrix) == pytest.approx((10.0, 20.0, 30.0), abs=1e-6)
+
+
+def _compose(pitch: float, yaw: float, roll: float) -> np.ndarray:
+    """`Rz(roll) @ Ry(yaw) @ Rx(pitch)`, built from the axes themselves."""
+    a, b, c = (math.radians(angle) for angle in (pitch, yaw, roll))
+    about_x = np.array([[1, 0, 0], [0, math.cos(a), -math.sin(a)], [0, math.sin(a), math.cos(a)]])
+    about_y = np.array([[math.cos(b), 0, math.sin(b)], [0, 1, 0], [-math.sin(b), 0, math.cos(b)]])
+    about_z = np.array([[math.cos(c), -math.sin(c), 0], [math.sin(c), math.cos(c), 0], [0, 0, 1]])
+    return about_z @ about_y @ about_x
+
+
+# ---------------------------------------------------------------------------
+# geometry stability
+#
+# The crop was measured from a single frame one second in. That frame can be a
+# fade-in or a title card, and a layout that changes mid-session - active
+# speaker view, which has not been ruled out for every recording - would go
+# unnoticed.
+# ---------------------------------------------------------------------------
+def test_identical_boxes_agree(default_config: AppConfig):
+    box = default_config.video.tiles["right"]
+    assert stage._boxes_agree([box, box, box])
+
+
+def test_a_single_box_cannot_disagree(default_config: AppConfig):
+    assert stage._boxes_agree([default_config.video.tiles["right"]])
+    assert stage._boxes_agree([])
+
+
+def test_boxes_differing_within_tolerance_agree():
+    """Sub-pixel jitter between frames is the same box, not a moved one."""
+    assert stage._boxes_agree(
+        [
+            CropBox(x=0.5, y=0.25, width=0.495, height=0.5),
+            CropBox(x=0.505, y=0.25, width=0.495, height=0.5),
+        ]
+    )
+
+
+def test_a_moved_tile_is_a_disagreement():
+    """Which is what a switch to active-speaker view would look like."""
+    assert not stage._boxes_agree(
+        [
+            CropBox(x=0.5, y=0.25, width=0.5, height=0.5),
+            CropBox(x=0.0, y=0.0, width=1.0, height=1.0),
+        ]
+    )
+
+
+def test_unstable_geometry_is_flagged(default_config: AppConfig):
+    record = stage.qc_record(
+        _session(),
+        frame_measures(),
+        backend=MediaPipeBackend(default_config.face.mediapipe, model_dir=Path("/nowhere")),
+        sampling=resolve_sampling(25.0, 5.0),
+        crop=default_config.video.tiles["right"],
+        letterboxed=True,
+        crop_stable=False,
+        config=default_config,
+    )
+    assert stage.FLAG_CROP_UNSTABLE in record["flags"]
+
+
+@pytest.mark.slow
+def test_the_crop_is_checked_at_several_points(
+    roots: DataRoots, default_config: AppConfig, face_session: Any, model_available: Path
+):
+    face_session(28)
+    result = stage.run(default_config, roots, workers=1)
+    row = result.frame.iloc[0]
+    # A statically laid out recording is stable, so no flag.
+    assert stage.FLAG_CROP_UNSTABLE not in str(row["flags"])
+    assert row["letterbox_detected"]
+
+
+# ---------------------------------------------------------------------------
+# the backend record survives the QC table
+# ---------------------------------------------------------------------------
+@pytest.mark.slow
+def test_the_backend_is_recorded_beside_the_measurements(
+    roots: DataRoots, default_config: AppConfig, face_session: Any, model_available: Path
+):
+    face_session(28)
+    stage.run(default_config, roots, workers=1)
+
+    record = stage.read_backend_record(roots, 28)
+    assert record is not None
+    assert record["backend"] == "mediapipe"
+    assert "mediapipe/" in record["backend_version"]
+
+
+@pytest.mark.slow
+def test_deleting_the_qc_table_does_not_lose_the_backend(
+    roots: DataRoots, default_config: AppConfig, face_session: Any, model_available: Path
+):
+    """Otherwise the one fact that makes a later table safe to assemble is gone."""
+    face_session(28)
+    stage.run(default_config, roots, workers=1)
+    (roots.out / stage.FACE_QC_FILENAME).unlink()
+
+    result = stage.run(default_config, roots, workers=1)
+
+    assert len(result.report.skipped) == 1
+    assert result.frame.iloc[0]["backend"] == "mediapipe"
+
+
+@pytest.mark.slow
+def test_a_backend_change_on_a_subset_is_refused(
+    roots: DataRoots, default_config: AppConfig, face_session: Any, model_available: Path
+):
+    """The case the design is for: re-extract some sessions with the other tool.
+
+    Checked across everything on disk, not only the sessions in this run, so a
+    subset rerun cannot leave the work tree quietly inconsistent.
+    """
+    face_session(28)
+    stage.run(default_config, roots, workers=1)
+
+    # A second session already measured with the other backend.
+    stage.face_path(roots, 3).parent.mkdir(parents=True, exist_ok=True)
+    stage.frame_table(3, frame_measures(), default_config.face.unit_keys).to_parquet(
+        stage.face_path(roots, 3), index=False
+    )
+    stage.write_backend_record(
+        roots, 3, OpenFaceBackend(default_config.face.openface, csv_dir=roots.work / "of")
+    )
+
+    with pytest.raises(FaceError, match="more than one backend"):
+        stage.run(default_config, roots, workers=1)
+
+
+def test_a_missing_or_corrupt_record_reads_as_absent(roots: DataRoots):
+    assert stage.read_backend_record(roots, 28) is None
+    path = stage.backend_sidecar_path(roots, 28)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not json", encoding="utf-8")
+    assert stage.read_backend_record(roots, 28) is None
+    path.write_text('{"session_id": 28}', encoding="utf-8")
+    assert stage.read_backend_record(roots, 28) is None
+
+
+def test_stored_backends_ignores_unrelated_files(roots: DataRoots, default_config: AppConfig):
+    stage.face_dir(roots)
+    stage.write_backend_record(
+        roots, 28, MediaPipeBackend(default_config.face.mediapipe, model_dir=Path("/nowhere"))
+    )
+    (stage.face_dir(roots) / "notes.backend.json").write_text("{}", encoding="utf-8")
+
+    stored = stage.stored_backends(roots)
+
+    assert set(stored) == {28}
+    assert stored[28]["backend"] == "mediapipe"

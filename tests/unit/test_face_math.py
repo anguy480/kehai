@@ -20,13 +20,19 @@ from vc_multimodal.features.face_math import (
 
 
 def rotation(pitch: float = 0.0, yaw: float = 0.0, roll: float = 0.0) -> np.ndarray:
-    """A 4x4 transform for the given ZYX Euler angles, in degrees."""
-    p, y, r = (math.radians(a) for a in (pitch, yaw, roll))
-    rx = np.array([[1, 0, 0], [0, math.cos(r), -math.sin(r)], [0, math.sin(r), math.cos(r)]])
-    ry = np.array([[math.cos(p), 0, math.sin(p)], [0, 1, 0], [-math.sin(p), 0, math.cos(p)]])
-    rz = np.array([[math.cos(y), -math.sin(y), 0], [math.sin(y), math.cos(y), 0], [0, 0, 1]])
+    """A 4x4 transform for the given head angles, in degrees.
+
+    Built from the axes themselves rather than from the extraction's own
+    formulae, so this cannot agree with a mislabelled decomposition. In the
+    camera frame X points right, Y up and Z along the optical axis, so pitch
+    turns about X, yaw about Y and roll about Z.
+    """
+    a, b, c = (math.radians(angle) for angle in (pitch, yaw, roll))
+    about_x = np.array([[1, 0, 0], [0, math.cos(a), -math.sin(a)], [0, math.sin(a), math.cos(a)]])
+    about_y = np.array([[math.cos(b), 0, math.sin(b)], [0, 1, 0], [-math.sin(b), 0, math.cos(b)]])
+    about_z = np.array([[math.cos(c), -math.sin(c), 0], [math.sin(c), math.cos(c), 0], [0, 0, 1]])
     matrix = np.eye(4)
-    matrix[:3, :3] = rz @ ry @ rx
+    matrix[:3, :3] = about_z @ about_y @ about_x
     return matrix
 
 
@@ -72,15 +78,36 @@ def test_an_identity_transform_is_a_level_head():
 @pytest.mark.parametrize(
     ("angles", "expected"),
     [
-        ({"yaw": 30.0}, (0.0, 30.0, 0.0)),
         ({"pitch": 20.0}, (20.0, 0.0, 0.0)),
+        ({"yaw": 30.0}, (0.0, 30.0, 0.0)),
         ({"roll": -15.0}, (0.0, 0.0, -15.0)),
         ({"pitch": 10.0, "yaw": 20.0, "roll": 5.0}, (10.0, 20.0, 5.0)),
     ],
 )
-def test_each_axis_is_recovered(angles: dict[str, float], expected: tuple[float, float, float]):
+def test_each_axis_lands_in_its_own_channel(
+    angles: dict[str, float], expected: tuple[float, float, float]
+):
+    """A rotation about one axis must move one angle and leave the others.
+
+    An earlier version returned the three in the order (yaw, roll, pitch) while
+    labelling them (pitch, yaw, roll). Every axis was individually recoverable,
+    so a test that round-tripped through the same convention passed anyway.
+    """
     result = head_pose_from_matrix(rotation(**angles))
     assert result == pytest.approx(expected, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("axis", "index"),
+    [("pitch", 0), ("yaw", 1), ("roll", 2)],
+)
+def test_no_other_channel_moves(axis: str, index: int):
+    """Stated separately from the values, since this is the property that broke."""
+    result = head_pose_from_matrix(rotation(**{axis: 25.0}))
+    assert result is not None
+    assert result[index] == pytest.approx(25.0, abs=1e-6)
+    others = [value for position, value in enumerate(result) if position != index]
+    assert others == pytest.approx([0.0, 0.0], abs=1e-6)
 
 
 def test_a_three_by_three_rotation_is_accepted():
@@ -90,8 +117,16 @@ def test_a_three_by_three_rotation_is_accepted():
 
 
 def test_a_degenerate_decomposition_returns_nothing():
-    """Straight up: yaw and roll are not separable, so no angles are claimed."""
-    assert head_pose_from_matrix(rotation(pitch=90.0)) is None
+    """At 90 degrees of yaw, pitch and roll are not separable, so none is claimed."""
+    assert head_pose_from_matrix(rotation(yaw=90.0)) is None
+    assert head_pose_from_matrix(rotation(yaw=-90.0)) is None
+
+
+def test_the_rotation_matrix_is_a_proper_rotation():
+    """Guards the assumption that the top-left 3x3 is orthonormal, not scaled."""
+    matrix = rotation(pitch=10.0, yaw=20.0, roll=30.0)[:3, :3]
+    assert np.allclose(matrix @ matrix.T, np.eye(3), atol=1e-12)
+    assert np.linalg.det(matrix) == pytest.approx(1.0)
 
 
 def test_a_malformed_matrix_returns_nothing():

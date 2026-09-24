@@ -100,6 +100,35 @@ among the three predictive of social performance, and promoting it on the
 strength of a different study's different outcome is exactly the move the
 tiering exists to prevent.
 
+## Head pose, and what is verified about it
+
+Head pose is extracted and sits in the exploratory tier. Two things about it
+are worth recording, because both were found by checking rather than assumed.
+
+**The axis naming was wrong, and only an empirical test could find it.** The
+first implementation decomposed MediaPipe's 4x4 transform and returned the
+three angles in the order `(yaw, roll, pitch)` while labelling them
+`(pitch, yaw, roll)`. Every angle was individually recoverable, so a test that
+built a rotation with the same convention and read it back passed. Rotating an
+image in its own plane is a rotation about the camera's optical axis and must
+therefore appear as roll; against the real model it appeared as yaw. The
+extraction is now `pitch = atan2(R21, R22)` about X, `yaw = asin(-R20)` about
+Y, `roll = atan2(R10, R00)` about Z, and a test drives the real landmarker with
+images rotated by known angles.
+
+The same error made the two backends disagree with each other. OpenFace reports
+`pose_Rx`, `pose_Ry` and `pose_Rz` per axis, and that mapping was right, so
+`head_pitch` meant rotation about Y under MediaPipe and about X under OpenFace.
+Given that the backend is expected to change, that was the worse half of the
+bug. A test now asserts both backends put the same axis in the same column.
+
+**Audio and video share a time origin.** The facial measures are joined to a
+speaking/listening timeline derived from the audio, so a constant A/V offset
+would misalign every facial feature with the window it is summarised over, with
+nothing to notice it. Checked across all 62 recordings: every one reports
+`start_time` 0.000000 for both streams, so the offset is zero rather than
+assumed to be.
+
 ## Consequences
 
 * **Their stronger finding cannot be replicated here.** The gaze result rests

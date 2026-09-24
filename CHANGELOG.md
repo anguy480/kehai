@@ -8,6 +8,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Head pose from MediaPipe was returned in the order `(yaw, roll, pitch)` while
+  labelled `(pitch, yaw, roll)`. Each angle was individually recoverable, so a
+  test that round-tripped through the same convention passed; rotating an image
+  in its own plane is a rotation about the optical axis and appeared as yaw
+  rather than roll. Fixed, and now verified by driving the real model with
+  images rotated by known angles. The same error made `head_pitch` mean a
+  different axis under each backend, since the OpenFace mapping was correct.
+- The face crop was measured from a single frame one second in, which can be a
+  fade-in or a title card, and would miss a layout that changes mid-session. It
+  is now checked at three points through the recording and flagged
+  `face_crop_unstable` when they disagree.
+- The facial backend was recorded only in the QC table, so deleting that table
+  lost the one fact that makes a later table safe to assemble. It is now
+  written beside the measurements, and the mixing check covers every session
+  with data on disk rather than only those in the current run - so
+  re-extracting a subset with the other backend is refused.
+
 - Label OCR found nothing in any of the 62 recordings. They carry 180px
   letterbox bars top and bottom - the content is two 640x360 tiles side by side
   inside a 720p frame - so a label region expressed as a fraction of the whole
