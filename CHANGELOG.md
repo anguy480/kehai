@@ -149,6 +149,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   since the label text is only a dozen or so pixels tall.
 - Letterbox detection and region resolution as pure geometry
   (`features/geometry.py`).
+- `vc face`: facial action units from the participant's tile. Frames are
+  sampled at a rate that divides the recording's own frame rate exactly,
+  cropped after correcting for the letterbox bars these recordings carry, and
+  measured; frames are decoded, measured and discarded. Undetected frames stay
+  in the table as rows, so the dropped fraction accounts for every frame looked
+  at. Head pose is recorded as head pose and never as gaze.
+- Two face backends behind one interface: MediaPipe (default) and an OpenFace
+  CSV importer that is first-class rather than a fallback, since OpenFace is
+  the lab's house pipeline. The backend and its version are recorded per
+  session, the MediaPipe model is verified against its pinned hash before use,
+  and a table whose sessions do not share one backend is refused with an
+  explanation that a switch is a full rerun, not a top-up.
+- `handoff_text.py`: the notes the handoff README must carry, kept as tested
+  constants so a note earned by a design decision cannot be lost when the
+  handoff stage is written. Two so far: why a backend change requires a full
+  rerun, and why there are no gaze features.
 - `vc prosody`: participant prosody via Praat, with overlapping speech
   excluded and stretches too short to measure discarded. Twelve features: F0
   variability, IQR, range and frame-to-frame movement, all in semitones

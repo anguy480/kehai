@@ -360,6 +360,67 @@ def write_session_wav(
 # ---------------------------------------------------------------------------
 # Video
 # ---------------------------------------------------------------------------
+def write_letterboxed_face_video(
+    path: Path,
+    session: SyntheticSession,
+    *,
+    bar: int = 180,
+    detectable: bool = True,
+) -> Path:
+    """Write a gallery-view video with letterbox bars and face-like tiles.
+
+    Matches the real recordings' geometry: 1280x720 with bars top and bottom,
+    so the content is two 16:9 tiles side by side. Each tile holds a crude
+    frontal face, drawn large enough that a landmarker has a chance of finding
+    it, with a mouth that opens while that speaker talks.
+
+    `detectable=False` draws flat grey tiles instead, for testing the
+    dropped-frame path.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    width, height = 1280, 720
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter_fourcc(*"mp4v"), session.fps, (width, height)
+    )
+    if not writer.isOpened():  # pragma: no cover - depends on local codecs
+        msg = f"OpenCV could not open a writer for {path}"
+        raise RuntimeError(msg)
+
+    content_top, content_height = bar, height - 2 * bar
+    half = width // 2
+    n_frames = round(session.duration * session.fps)
+
+    try:
+        for index in range(n_frames):
+            t = index / session.fps
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
+            frame[content_top : content_top + content_height, :] = 205
+
+            for speaker in session.speakers:
+                tile = session.tile_of(speaker)
+                cx = (half // 2) if tile == "left" else (half + half // 2)
+                cy = content_top + content_height // 2
+                if not detectable:
+                    continue
+
+                # A frontal face: head, brows, eyes, nose, mouth.
+                cv2.ellipse(frame, (cx, cy), (95, 125), 0, 0, 360, (212, 184, 164), -1)
+                for sign in (-1, 1):
+                    eye_x = cx + sign * 38
+                    cv2.ellipse(frame, (eye_x, cy - 30), (17, 10), 0, 0, 360, (250, 250, 250), -1)
+                    cv2.circle(frame, (eye_x, cy - 30), 7, (35, 35, 45), -1)
+                    cv2.ellipse(frame, (eye_x, cy - 52), (20, 7), 0, 180, 360, (70, 50, 40), 3)
+                cv2.line(frame, (cx, cy - 20), (cx, cy + 18), (180, 150, 135), 3)
+                speaking = session.speaking_at(speaker, t)
+                openness = 0.5 + 0.5 * float(np.sin(2.0 * np.pi * 3.0 * t)) if speaking else 0.0
+                mouth_h = max(4, round(6 + openness * 22))
+                cv2.ellipse(frame, (cx, cy + 52), (30, mouth_h), 0, 0, 360, (90, 55, 55), -1)
+            writer.write(frame)
+    finally:
+        writer.release()
+    return path
+
+
 def write_session_video(path: Path, session: SyntheticSession) -> Path:
     """Write a synthetic two-tile "gallery view" video.
 

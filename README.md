@@ -133,7 +133,7 @@ subset.
 | `vc vad` | Silero VAD to recover true speech boundaries: one pass over the recording, intersected with the diarized segments. Reports how much segment time was actually silence. |
 | `vc turns` | Turns, response latency, pauses, speaking-time ratio, overlap, and the speaking/listening timeline the facial stages consume. Requires a role mapping and refuses to guess one. |
 | `vc prosody` | Participant speech only, overlapping speech excluded: F0 in semitones relative to that speaker's own median, intensity, jitter, shimmer, harmonics-to-noise and a speech-rate proxy, via Praat. Requires a role mapping. |
-| `vc face` | Sample, crop, landmark (MediaPipe by default; OpenFace CSV importer available); drop low-confidence frames. |
+| `vc face` | Sample frames at a rate that divides the native frame rate, crop to the participant tile after correcting for letterboxing, and measure action units. MediaPipe by default, OpenFace CSV importer first-class. Backend recorded on every row; a table mixing backends is refused. |
 | `vc aggregate` | One row per session, facial features split by participant-speaking vs -listening. |
 | `vc handoff` | Build the bundle: features, feature dictionary, QC report, manifest, professor-facing README. |
 | `vc model` | Run by the label holder: leave-one-participant-out CV across feature sets and targets. |
@@ -156,6 +156,7 @@ uv run vc --sessions 28 diarize             # check one session before all 62
 uv run vc vad                               # refine segments into real speech
 uv run vc turns                             # needs a role mapping; see below
 uv run vc prosody                           # participant prosody, same mapping
+uv run vc face                              # action units in the participant tile
 make pilot                                  # every stage, pilot sessions only
 ```
 
@@ -272,6 +273,18 @@ study of the same construct with the same house pipeline
 - **Tanaka et al. (2025)**, *JMIR Formative Research* 9:e59261, extracted AU01,
   AU02, AU04, AU06 and AU12 with OpenFace. That is the set extracted here, so
   the comparison is direct.
+
+MediaPipe is the default only because an OpenFace run has not been confirmed.
+The measurements are **not interchangeable**: blendshape scores and AU
+intensities are different scales for the same constructs. So `qc__face_backend`
+is recorded on every row, a feature table mixing backends is refused rather
+than pooled, and switching backend means re-extracting every session rather
+than topping up the missing ones. The handoff README says the same thing to
+whoever runs the analysis.
+
+Before running `vc face`, download the landmarker model once into
+`$VC_WORK_ROOT/models/`; it is pinned by SHA-256 in config and is not fetched
+automatically, so a run cannot silently pick up a different model.
 
 One channel of that precedent **cannot** be replicated. Its gaze findings rest
 on Tobii eye tracking; these are Zoom recordings with no eye tracker, and head

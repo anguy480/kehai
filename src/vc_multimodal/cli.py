@@ -21,6 +21,7 @@ from vc_multimodal import __version__
 from vc_multimodal.config import DEFAULT_CONFIG_PATH, AppConfig, ConfigError, load_config
 from vc_multimodal.contracts import ContractError
 from vc_multimodal.diarization import DiarizationError
+from vc_multimodal.faces import FaceError
 from vc_multimodal.ffmpeg import FfmpegError, FfmpegTools
 from vc_multimodal.logging_setup import configure_logging, log_file_path
 from vc_multimodal.ocr import OcrError, get_backend
@@ -37,6 +38,7 @@ from vc_multimodal.roles import RolesUnavailableError
 from vc_multimodal.runner import StageReport
 from vc_multimodal.stages import diarize as diarize_stage
 from vc_multimodal.stages import extract_audio as extract_audio_stage
+from vc_multimodal.stages import face as face_stage
 from vc_multimodal.stages import inventory as inventory_stage
 from vc_multimodal.stages import preview as preview_stage
 from vc_multimodal.stages import prosody as prosody_stage
@@ -473,6 +475,33 @@ def prosody(ctx: typer.Context) -> None:
     typer.echo(f"\nwrote {result.path}")
     typer.echo("")
     for line in prosody_stage.summarise(result.frame):
+        typer.echo(line)
+    typer.echo("")
+    _print_report(result.report)
+
+
+@app.command()
+def face(ctx: typer.Context) -> None:
+    """Measure facial action units in the participant's video tile."""
+    setup = _setup(ctx, face_stage.STAGE)
+
+    try:
+        result = face_stage.run(
+            setup.config,
+            setup.roots,
+            session_ids=setup.session_ids,
+            workers=setup.workers,
+            force=setup.force,
+            tools=setup.tools,
+        )
+    except (FaceError, ContractError) as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo(f"\nper-frame measures: {face_stage.face_dir(setup.roots)}")
+    typer.echo(f"wrote {result.path}")
+    typer.echo("")
+    for line in face_stage.summarise(result.frame, setup.config):
         typer.echo(line)
     typer.echo("")
     _print_report(result.report)

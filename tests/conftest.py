@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -15,6 +16,25 @@ from vc_multimodal.config import AppConfig, load_config
 from vc_multimodal.logging_setup import ROOT_LOGGER_NAME
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _real_model_path() -> Path | None:
+    """Locate the downloaded face landmarker, before any test moves the roots.
+
+    Resolved at import time on purpose: the `roots` fixture repoints
+    `$VC_WORK_ROOT` at a temporary directory, so by the time a test runs the
+    real one is no longer in the environment.
+    """
+    paths.load_env(REPO_ROOT)
+    configured = os.environ.get(paths.WORK_ROOT_ENV, "").strip()
+    if not configured:
+        return None
+    candidate = Path(configured).expanduser() / "models" / "face_landmarker.task"
+    return candidate if candidate.is_file() else None
+
+
+#: The real landmarker model, or None if it has not been downloaded.
+REAL_FACE_MODEL: Path | None = _real_model_path()
 
 # Folder names and ID ranges mirror config/default.yaml.
 WINTER_FOLDER = "December 21 2025"

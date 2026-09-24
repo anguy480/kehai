@@ -18,8 +18,8 @@ import pytest
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 
+from tests.conftest import REAL_FACE_MODEL
 from vc_multimodal.config import AppConfig, ConfigError, load_config
-from vc_multimodal.paths import load_env, resolve_roots
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT = REPO_ROOT / "config" / "default.yaml"
@@ -215,15 +215,9 @@ def test_the_model_asset_is_pinned_by_hash(default_config: AppConfig):
 # the real model emits what the configuration asks for
 # ---------------------------------------------------------------------------
 def _landmarker_model() -> Path:
-    load_env()
-    try:
-        roots = resolve_roots(require_data=False, create=False)
-    except Exception:  # pragma: no cover - no roots configured
-        pytest.skip("no work root configured")
-    model = roots.work / "models" / "face_landmarker.task"
-    if not model.is_file():
+    if REAL_FACE_MODEL is None:
         pytest.skip("the face landmarker model has not been downloaded")
-    return model
+    return REAL_FACE_MODEL
 
 
 @pytest.mark.slow
