@@ -36,6 +36,7 @@ from vc_multimodal.paths import (
 from vc_multimodal.prosody import ProsodyError
 from vc_multimodal.roles import RolesUnavailableError
 from vc_multimodal.runner import StageReport
+from vc_multimodal.stages import aggregate as aggregate_stage
 from vc_multimodal.stages import diarize as diarize_stage
 from vc_multimodal.stages import extract_audio as extract_audio_stage
 from vc_multimodal.stages import face as face_stage
@@ -502,6 +503,29 @@ def face(ctx: typer.Context) -> None:
     typer.echo(f"wrote {result.path}")
     typer.echo("")
     for line in face_stage.summarise(result.frame, setup.config):
+        typer.echo(line)
+    typer.echo("")
+    _print_report(result.report)
+
+
+@app.command()
+def aggregate(ctx: typer.Context) -> None:
+    """Join every stage into one row per session: the table the handoff carries."""
+    setup = _setup(ctx, aggregate_stage.STAGE)
+
+    try:
+        result = aggregate_stage.run(
+            setup.config,
+            setup.roots,
+            session_ids=setup.session_ids,
+        )
+    except (FaceError, ContractError) as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo(f"\nwrote {result.path}")
+    typer.echo("")
+    for line in aggregate_stage.summarise(result, setup.config):
         typer.echo(line)
     typer.echo("")
     _print_report(result.report)

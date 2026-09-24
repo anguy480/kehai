@@ -166,6 +166,24 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   since the label text is only a dozen or so pixels tall.
 - Letterbox detection and region resolution as pure geometry
   (`features/geometry.py`).
+- `vc aggregate`: joins the turn, prosodic and facial measures into one row
+  per session - the table the handoff bundle carries. Facial action units are
+  summarised separately over the participant-speaking and
+  participant-listening windows, which is this project's addition to the lab's
+  prior work and the reason the stage exists: the windows come from `vc turns`
+  and the measures from `vc face`, and neither knows about the other. 54
+  features in four families. Every discovered session gets a row, with any
+  missing upstream stage named rather than the session dropped; a window with
+  too little measured time contributes nothing rather than statistics resting
+  on a handful of frames; and per-window coverage is recorded so a thin summary
+  is visible. The stage reports the confirmatory/exploratory split and refuses
+  a table whose facial measures come from two backends.
+- `aggregate.peak_action_units` and `aggregate.pose_measures`: depth where the
+  precedent points and breadth nowhere else. Every action unit gets a mean and
+  a standard deviation; the three units Miyamoto et al. 2025 found predictive
+  additionally get a 90th percentile, since these distributions are
+  zero-inflated and a mean and a peak answer different questions; head pose
+  gets only a standard deviation, because its mean records where the camera sat.
 - `vc face`: facial action units from the participant's tile. Frames are
   sampled at a rate that divides the recording's own frame rate exactly,
   cropped after correcting for the letterbox bars these recordings carry, and

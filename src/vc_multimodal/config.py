@@ -621,13 +621,35 @@ class AggregateConfig(_Base):
     """Per-session summarisation.
 
     The feature count is kept deliberately modest: with 62 sessions, a large
-    feature set overfits. See docs/decisions/0006.
+    feature set overfits. What makes the analysis defensible is the
+    confirmatory/exploratory split in `model.tiers`, not this count
+    (docs/decisions/0012).
     """
 
+    # Applied to every action unit in both windows.
     stats: tuple[str, ...]
+    # Action units that additionally get a high percentile. The distributions
+    # are heavily zero-inflated, so a mean answers "how much expression
+    # overall" and a percentile answers "how strong it gets".
+    peak_action_units: tuple[str, ...]
+    # Head pose channels summarised as movement. Only a standard deviation is
+    # taken: the mean is an artifact of where the camera sat.
+    pose_measures: tuple[str, ...]
     min_speaking_s: float = Field(gt=0.0)
     min_listening_s: float = Field(gt=0.0)
     max_features: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _statistics_must_be_computable(self) -> Self:
+        known = {"mean", "sd", "p90"}
+        unknown = sorted(set(self.stats) - known)
+        if unknown:
+            msg = f"unknown statistic(s) {unknown}; available: {sorted(known)}"
+            raise ValueError(msg)
+        if not self.stats:
+            msg = "at least one statistic must be configured"
+            raise ValueError(msg)
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -787,6 +809,30 @@ class AppConfig(_Base):
     handoff: HandoffConfig
     model: ModelConfig
     runtime: RuntimeConfig
+
+    @model_validator(mode="after")
+    def _peak_units_must_be_extracted(self) -> Self:
+        configured = set(self.face.unit_keys)
+        unknown = sorted(set(self.aggregate.peak_action_units) - configured)
+        if unknown:
+            msg = (
+                f"aggregate.peak_action_units names {unknown}, which face.action_units "
+                f"does not extract ({sorted(configured)})"
+            )
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _pose_measures_must_be_available(self) -> Self:
+        known = {"head_pitch", "head_yaw", "head_roll"}
+        unknown = sorted(set(self.aggregate.pose_measures) - known)
+        if unknown:
+            msg = f"aggregate.pose_measures names {unknown}; available: {sorted(known)}"
+            raise ValueError(msg)
+        if self.aggregate.pose_measures and not self.face.mediapipe.head_pose:
+            msg = "aggregate.pose_measures asks for head pose, but face.mediapipe.head_pose is off"
+            raise ValueError(msg)
+        return self
 
     def snapshot(self) -> dict[str, Any]:
         """Plain-data view of the resolved config, for the run manifest."""

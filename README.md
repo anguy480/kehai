@@ -134,7 +134,7 @@ subset.
 | `vc turns` | Turns, response latency, pauses, speaking-time ratio, overlap, and the speaking/listening timeline the facial stages consume. Requires a role mapping and refuses to guess one. |
 | `vc prosody` | Participant speech only, overlapping speech excluded: F0 in semitones relative to that speaker's own median, intensity, jitter, shimmer, harmonics-to-noise and a speech-rate proxy, via Praat. Requires a role mapping. |
 | `vc face` | Sample frames at a rate that divides the native frame rate, crop to the participant tile after correcting for letterboxing, and measure action units. MediaPipe by default, OpenFace CSV importer first-class. Backend recorded on every row; a table mixing backends is refused. |
-| `vc aggregate` | One row per session, facial features split by participant-speaking vs -listening. |
+| `vc aggregate` | Joins every stage into one row per session: the table the handoff carries. Facial action units summarised separately over the speaking and listening windows, with per-window coverage recorded. Reports the confirmatory/exploratory split. |
 | `vc handoff` | Build the bundle: features, feature dictionary, QC report, manifest, professor-facing README. |
 | `vc model` | Run by the label holder: leave-one-participant-out CV across feature sets and targets. |
 
@@ -157,6 +157,7 @@ uv run vc vad                               # refine segments into real speech
 uv run vc turns                             # needs a role mapping; see below
 uv run vc prosody                           # participant prosody, same mapping
 uv run vc face                              # action units in the participant tile
+uv run vc aggregate                         # one row per session: features.csv
 make pilot                                  # every stage, pilot sessions only
 ```
 
@@ -318,6 +319,21 @@ features are computed on a machine that has never held the questionnaire
 scores, and the handoff manifest records the commit that produced them. Tuning
 features against the outcome is not something that was avoided; it is something
 that could not have happened.
+
+### The feature table
+
+`vc aggregate` writes `$VC_OUT_ROOT/features.csv`: one row per session, 54
+features in four families, plus QC columns. Three properties of it are worth
+knowing before reading it:
+
+- **Every discovered session gets a row.** A session missing an upstream stage
+  has those features absent and the stage named in `qc__stages_missing`, rather
+  than being dropped from the table.
+- **A window with too little measured time contributes no features for that
+  window.** `qc__speaking_seconds`, `qc__listening_seconds` and the
+  `qc__face_measured_*` fractions say how much was behind each summary.
+- **`qc__face_backend` is on every row**, and a table whose sessions do not
+  share one facial backend is refused rather than pooled.
 
 ## Design decisions
 

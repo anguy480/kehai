@@ -501,3 +501,29 @@ def test_prosody_measures_participant_speech(
     assert (roots.out / "prosody_features.csv").exists()
     assert "F0 variability (semitones)" in result.output
     assert "each speaker's own median" in result.output
+
+
+# ---------------------------------------------------------------------------
+# aggregate
+# ---------------------------------------------------------------------------
+@pytest.mark.slow
+def test_aggregate_produces_a_row_per_session_even_with_nothing_upstream(
+    roots: DataRoots, make_real_media: Any
+):
+    make_real_media(28)
+
+    result = _run("aggregate")
+
+    assert result.exit_code == 0
+    assert (roots.out / "features.csv").exists()
+    assert "by family:" in result.output
+    # The tier plan is what a reviewer looks for first.
+    assert "confirmatory" in result.output
+    assert "4 test(s)" in result.output
+
+
+@pytest.mark.slow
+def test_aggregate_names_the_missing_stages(roots: DataRoots, make_real_media: Any):
+    make_real_media(28)
+    result = _run("aggregate")
+    assert "aggregate_upstream_stage_missing" in result.output

@@ -380,8 +380,25 @@ face:
     success_column: "success"
 
 aggregate:
-  # Robust and non-robust summaries, computed per feature family.
-  stats: ["mean", "sd", "median", "iqr"]
+  # Applied to every action unit in both the speaking and listening windows.
+  # The mean is what the precedent measured (docs/decisions/0013), so it is
+  # what the confirmatory features are; the standard deviation adds how much
+  # the expression moves within the window.
+  stats: ["mean", "sd"]
+
+  # These additionally get a 90th percentile. Action unit distributions are
+  # heavily zero-inflated - most frames are neutral - so a mean answers "how
+  # much expression overall" while a percentile answers "how strong it gets",
+  # and the two can diverge sharply. Depth is spent on the three units
+  # Miyamoto et al. 2025 found predictive of social performance, and nowhere
+  # else.
+  peak_action_units: ["au01", "au06", "au12"]
+
+  # Head pose summarised as movement, not as position: only a standard
+  # deviation is taken, because the mean records where the camera sat rather
+  # than anything about the participant. Roll is omitted to stay inside the
+  # feature budget; head tilt is the least socially loaded of the three.
+  pose_measures: ["head_pitch", "head_yaw"]
   min_speaking_s: 30.0             # too little speech to summarise reliably
   min_listening_s: 30.0
   # A sanity ceiling only: it exists to catch a bug that generates hundreds of
