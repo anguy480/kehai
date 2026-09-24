@@ -140,9 +140,22 @@ class ImportScan:
 
 
 def scan_import_dir(
-    import_dir: Path, session_ids: Sequence[int], patterns: Sequence[str]
+    import_dir: Path,
+    session_ids: Sequence[int],
+    patterns: Sequence[str],
+    *,
+    known_ids: Sequence[int] | None = None,
 ) -> ImportScan:
     """Match every session to a file and report whatever is left over.
+
+    Args:
+        import_dir: Directory holding the diarization output.
+        session_ids: Sessions being processed now.
+        patterns: Filename patterns to try.
+        known_ids: Every session in the dataset. A file belonging to one of
+            these is accounted for even when that session is not part of this
+            run, so a `--sessions` subset does not report the other sessions'
+            files as unplaceable. Defaults to `session_ids`.
 
     Raises:
         DiarizationError: if the directory does not exist.
@@ -163,7 +176,16 @@ def scan_import_dir(
         else:
             matched[session_id] = found
 
+    # Files belonging to any session in the dataset are accounted for, whether
+    # or not that session is in this run. Only a file no session can claim is
+    # worth reporting: that is a naming difference, which is worth fixing with
+    # a pattern rather than by renaming the lab's files.
     claimed = {path.resolve() for path in matched.values()}
+    for session_id in known_ids if known_ids is not None else ():
+        found = find_file(import_dir, session_id, patterns)
+        if found is not None:
+            claimed.add(found.resolve())
+
     unmatched: list[str] = []
     timeless: list[str] = []
     for path in sorted(import_dir.rglob("*")):
@@ -229,9 +251,11 @@ class ImportBackend(DiarizationBackend):
         """
         return f"import/{self.import_dir.name}"
 
-    def scan(self, session_ids: Sequence[int]) -> ImportScan:
+    def scan(
+        self, session_ids: Sequence[int], *, known_ids: Sequence[int] | None = None
+    ) -> ImportScan:
         """Match sessions to files without parsing any of them."""
-        return scan_import_dir(self.import_dir, session_ids, self.patterns)
+        return scan_import_dir(self.import_dir, session_ids, self.patterns, known_ids=known_ids)
 
     def segments(self, session: RawSession) -> tuple[Segment, ...]:
         """Parse one session's diarization file.

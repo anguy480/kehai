@@ -138,9 +138,12 @@ diarization:
   #                       read its output with the importer
   backend: "import"
 
-  # Directory holding the files to import. UNCONFIRMED: set this once the
-  # original diarization output is available. Keep it under $VC_WORK_ROOT.
-  import_dir: null
+  # Directory holding the files to import, relative to $VC_WORK_ROOT.
+  # CONFIRMED: the original whisper-diarization output, supplied by the lab,
+  # unzipped to this path. 62 .srt files named by session ID, matching the
+  # inventory exactly, alongside 62 .txt files that carry no timestamps and are
+  # reported as ignored rather than used.
+  import_dir: "diarization/diarizations_original"
 
   # Filename patterns tried in order when matching a session ID to its files.
   # `{session_id}` is substituted.

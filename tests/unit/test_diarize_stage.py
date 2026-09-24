@@ -237,7 +237,7 @@ def test_the_configured_backend_is_built(roots: DataRoots, import_dir: Path):
 
 def test_import_without_a_directory_is_a_configuration_error(roots: DataRoots):
     """`vc inventory` must still load a config that has not settled this yet."""
-    config = load_config(DEFAULT)
+    config = load_config(DEFAULT, overrides={"diarization.import_dir": None})
     assert config.diarization.import_dir is None
     with pytest.raises(ConfigError, match="import_dir"):
         get_backend(config, roots)

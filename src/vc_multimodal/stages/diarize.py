@@ -239,7 +239,12 @@ def run(
     # An import backend can say up front which sessions it has files for,
     # which is far more useful than 62 identical per-session failures.
     if isinstance(engine, ImportBackend):
-        scan = engine.scan([session.session_id for session in selected])
+        scan = engine.scan(
+            [session.session_id for session in selected],
+            # Every discovered session, so a --sessions subset does not report
+            # the other sessions' files as unplaceable.
+            known_ids=[session.session_id for session in discovery.sessions],
+        )
         for line in scan.report_lines():
             logger.info("%s: %s", STAGE, line)
         notes.extend(scan.report_lines()[1:])

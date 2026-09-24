@@ -226,15 +226,22 @@ def test_dataset_requires_at_least_one_wave():
 # ---------------------------------------------------------------------------
 # stage preconditions that are deliberately not load-time errors
 # ---------------------------------------------------------------------------
-def test_default_config_loads_even_though_import_dir_is_unknown(default_config: AppConfig):
-    """`vc inventory` must work before diarization has been configured."""
+def test_the_default_import_dir_is_the_supplied_diarization_run(default_config: AppConfig):
+    """The professor supplied the original whisper-diarization output."""
     assert default_config.diarization.backend == "import"
-    assert default_config.diarization.import_dir is None
+    assert default_config.diarization.import_dir == "diarization/diarizations_original"
 
 
-def test_require_import_dir_explains_what_to_configure(default_config: AppConfig):
+def test_a_config_loads_even_though_import_dir_is_unset(default_config: AppConfig):
+    """`vc inventory` must work before diarization has been configured."""
+    config = load_config(DEFAULT, overrides={"diarization.import_dir": None})
+    assert config.diarization.import_dir is None
+
+
+def test_require_import_dir_explains_what_to_configure():
+    config = load_config(DEFAULT, overrides={"diarization.import_dir": None})
     with pytest.raises(ConfigError, match="import_dir"):
-        default_config.diarization.require_import_dir()
+        config.diarization.require_import_dir()
 
 
 def test_require_import_dir_returns_the_configured_value():
