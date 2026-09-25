@@ -342,9 +342,10 @@ tool that permits overlapping speech.
         parts.append(
             f"""### How the text features were aligned
 
-`{TEXT_FILE}` began life without any identifier column: {text.plan.expected_rows}
-rows, no session IDs. Rows were matched to sessions under an ordering rule
-supplied by the lab, quoted in full in `{MANIFEST_FILE}`:
+`{TEXT_FILE}` began life with no identifier column at all: one row per session
+in the manuscript's own order, and nothing naming which session. Rows were
+matched under an ordering rule supplied by the lab, quoted in full in
+`{MANIFEST_FILE}`:
 
 > {text.plan.provenance}
 
