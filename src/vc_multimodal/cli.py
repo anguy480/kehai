@@ -40,12 +40,14 @@ from vc_multimodal.stages import aggregate as aggregate_stage
 from vc_multimodal.stages import diarize as diarize_stage
 from vc_multimodal.stages import extract_audio as extract_audio_stage
 from vc_multimodal.stages import face as face_stage
+from vc_multimodal.stages import handoff as handoff_stage
 from vc_multimodal.stages import inventory as inventory_stage
 from vc_multimodal.stages import preview as preview_stage
 from vc_multimodal.stages import prosody as prosody_stage
 from vc_multimodal.stages import turns as turns_stage
 from vc_multimodal.stages import vad as vad_stage
 from vc_multimodal.stages import verify_layout as verify_layout_stage
+from vc_multimodal.stages.handoff import HandoffError
 
 app = typer.Typer(
     name="vc",
@@ -578,6 +580,51 @@ def verify_layout(
         typer.echo(line)
     typer.echo("")
     _print_report(result.report)
+
+
+@app.command()
+def handoff(
+    ctx: typer.Context,
+    allow_dirty: Annotated[
+        bool,
+        typer.Option(
+            "--allow-dirty",
+            help=(
+                "Build even though the working tree has uncommitted changes. The "
+                "bundle then records that its commit does not describe the code that "
+                "produced it."
+            ),
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Replace an existing bundle with the same name."),
+    ] = False,
+) -> None:
+    """Build the bundle the label holder receives: features, dictionary, QC, manifest.
+
+    Carries no labels, no transcripts, no audio and no frames. Refuses to build
+    from a modified working tree unless --allow-dirty, because the commit
+    recorded in the bundle is its main provenance.
+    """
+    setup = _setup(ctx, handoff_stage.STAGE)
+
+    try:
+        result = handoff_stage.run(
+            setup.config,
+            setup.roots,
+            allow_dirty=allow_dirty,
+            force=force or setup.force,
+        )
+    except (HandoffError, ContractError) as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo("")
+    for line in handoff_stage.summarise(result):
+        typer.echo(line)
+    typer.echo("")
+    typer.echo(f"read {result.path / handoff_stage.README_FILE} before sending it on")
 
 
 if __name__ == "__main__":  # pragma: no cover - module entry point

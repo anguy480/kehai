@@ -16,6 +16,7 @@ from vc_multimodal import ffmpeg as ffmpeg_module
 from vc_multimodal import paths
 from vc_multimodal.cli import EXIT_SETUP_ERROR, EXIT_STAGE_FAILED, app
 from vc_multimodal.paths import DataRoots
+from vc_multimodal.stages.aggregate import QC_COLUMNS
 
 runner = CliRunner()
 
@@ -527,3 +528,60 @@ def test_aggregate_names_the_missing_stages(roots: DataRoots, make_real_media: A
     make_real_media(28)
     result = _run("aggregate")
     assert "aggregate_upstream_stage_missing" in result.output
+
+
+# ---------------------------------------------------------------------------
+# handoff
+# ---------------------------------------------------------------------------
+def _features_for_handoff(roots: DataRoots) -> None:
+    """A minimal feature table with the real column names."""
+    columns: dict[str, Any] = {
+        "session_id": [1, 2],
+        "wave": ["winter", "winter"],
+        "turns__latency_median": [1.0, 2.0],
+        "prosody__f0_semitone_sd": [2.0, 3.0],
+    }
+    for name in QC_COLUMNS:
+        text = name in {"qc__stages_missing", "qc__role_source", "qc__face_backend", "qc__flags"}
+        columns[name] = ["", ""] if text else [1.0, 1.0]
+    pd.DataFrame(columns).to_csv(roots.out / "features.csv", index=False)
+
+
+def test_handoff_without_a_feature_table_fails_cleanly(roots: DataRoots):
+    # A missing prerequisite is a setup problem, not a stage failure: there is
+    # nothing to do until the user runs the earlier command.
+    result = _run("handoff", "--allow-dirty")
+    assert result.exit_code == EXIT_SETUP_ERROR
+    assert "vc aggregate" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_handoff_builds_a_bundle_and_points_at_the_readme(roots: DataRoots):
+    _features_for_handoff(roots)
+
+    result = _run("handoff", "--allow-dirty")
+
+    assert result.exit_code == 0
+    bundles = list((roots.out / "handoff").iterdir())
+    assert len(bundles) == 1
+    assert (bundles[0] / "README.md").exists()
+    assert (bundles[0] / "manifest.json").exists()
+    assert "read" in result.output
+    assert "README.md" in result.output
+
+
+def test_handoff_reports_the_absent_text_baseline(roots: DataRoots):
+    _features_for_handoff(roots)
+    result = _run("handoff", "--allow-dirty")
+    assert "text baseline: ABSENT" in result.output
+
+
+def test_handoff_refuses_to_overwrite_without_force(roots: DataRoots):
+    _features_for_handoff(roots)
+    assert _run("handoff", "--allow-dirty").exit_code == 0
+
+    second = _run("handoff", "--allow-dirty")
+
+    assert second.exit_code == EXIT_SETUP_ERROR
+    assert "already exists" in second.output
+    assert "--force" in second.output

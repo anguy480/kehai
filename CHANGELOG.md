@@ -129,6 +129,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `vc handoff` builds the bundle the label holder receives: the feature table,
+  a dictionary describing every column, the quality columns in a separate file
+  because they are not predictors, the text baseline with explicit session IDs, a
+  manifest, and a README written for someone who will not read the code. It
+  refuses to build from a modified working tree unless `--allow-dirty`, since the
+  commit is the bundle's main provenance; refuses a column that looks like a
+  questionnaire outcome or anything derived from a transcript; refuses to ship a
+  column it cannot describe; and stages the bundle in a temporary directory so an
+  interrupted build leaves nothing that could be sent by mistake.
+
 - The manuscript's text features are aligned to sessions under an explicit,
   documented ordering rule rather than an assumption (docs/decisions/0014). The
   table has no identifier column, so the rule is quoted from the code that wrote
