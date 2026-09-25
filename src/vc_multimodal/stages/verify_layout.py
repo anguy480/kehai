@@ -77,12 +77,17 @@ FLAG_OCR_ERROR: Final = "layout_ocr_error"
 # A label cannot be shown to recur without at least two sessions to compare.
 _MIN_SESSIONS_FOR_RECURRENCE: Final = 2
 
+#: What OCR itself concluded, as opposed to `decided_side`, which falls back to
+#: the configured assumption. Named so that readers of this table cannot drift
+#: from the writer.
+OCR_SIDE_COLUMN: Final = "ocr_side"
+
 COLUMN_ORDER: Final = (
     "session_id",
     "wave",
     "decided_side",
     "method",
-    "ocr_side",
+    OCR_SIDE_COLUMN,
     "assumed_side",
     "matches_assumed",
     "recurring_label_key",

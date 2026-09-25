@@ -95,6 +95,21 @@ class EcapaEmbedder(SpeakerEmbedder):
     def _savedir(self) -> Path:
         return self._work_root / self._config.cache_dir
 
+    @staticmethod
+    def _revision_kwargs(revision: str) -> dict[str, Any]:
+        """How to ask this SpeechBrain for an exact model revision.
+
+        SpeechBrain 1.1 moved fetching options into a `FetchConfig`; before
+        that, `revision` was a keyword of its own. Both are supported, because
+        losing the pin silently would be worse than either: the model would
+        still load, and the numbers would quietly stop being reproducible.
+        """
+        try:
+            from speechbrain.utils.fetching import FetchConfig  # noqa: PLC0415
+        except ImportError:
+            return {"revision": revision}
+        return {"fetch_config": FetchConfig(revision=revision)}
+
     def _load(self) -> Any:
         """Load the model, downloading it under the work root if needed."""
         if self._model is not None:
@@ -115,7 +130,7 @@ class EcapaEmbedder(SpeakerEmbedder):
             "run_opts": {"device": "cpu"},
         }
         if self._config.revision:
-            kwargs["revision"] = self._config.revision
+            kwargs.update(self._revision_kwargs(self._config.revision))
 
         logger.info("loading %s", self.version())
         try:

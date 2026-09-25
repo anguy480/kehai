@@ -563,10 +563,21 @@ def load_layout(roots: DataRoots) -> dict[int, str]:
     except (OSError, ValueError):  # pragma: no cover - defensive
         logger.warning("%s: could not read %s; OCR evidence unavailable", STAGE, path.name)
         return {}
-    if "psychiatrist_side" not in frame.columns:
+    # `ocr_side` is what OCR itself concluded. `decided_side` is deliberately
+    # not used: it falls back to the configured assumption, so reading it would
+    # let an assumption masquerade as corroboration by the labels.
+    if layout_stage.OCR_SIDE_COLUMN not in frame.columns:
+        logger.warning(
+            "%s: %s has no %s column; OCR evidence unavailable",
+            STAGE,
+            path.name,
+            layout_stage.OCR_SIDE_COLUMN,
+        )
         return {}
     sides: dict[int, str] = {}
-    for session_id, side in zip(frame["session_id"], frame["psychiatrist_side"], strict=True):
+    for session_id, side in zip(
+        frame["session_id"], frame[layout_stage.OCR_SIDE_COLUMN], strict=True
+    ):
         text = str(side).strip().lower()
         if text in {"left", "right"}:
             sides[int(session_id)] = text

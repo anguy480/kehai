@@ -28,6 +28,7 @@ from vc_multimodal.features.spans import Span
 from vc_multimodal.paths import DataRoots
 from vc_multimodal.runner import StageReport
 from vc_multimodal.stages import assign_speakers as stage
+from vc_multimodal.stages import verify_layout
 
 SAMPLE_RATE = 16_000
 
@@ -356,14 +357,40 @@ class TestTheOcrBridge:
 
 
 class TestLayoutInput:
+    def write_layout(self, roots: DataRoots, sides: list[str]) -> None:
+        """Written through the real column order, not a guess at it.
+
+        An earlier version of this test invented the column name, which let the
+        reader look for a column nothing writes: the OCR cross-check then
+        reported `unavailable` for every session and looked like a limitation of
+        the data rather than a bug.
+        """
+        rows = [
+            dict.fromkeys(verify_layout.COLUMN_ORDER)
+            | {"session_id": index + 1, verify_layout.OCR_SIDE_COLUMN: side}
+            for index, side in enumerate(sides)
+        ]
+        verify_layout.build_frame(rows).to_csv(
+            roots.out / verify_layout.LAYOUT_FILENAME, index=False
+        )
+
     def test_settled_sides_are_read(self, roots: DataRoots) -> None:
-        pd.DataFrame(
-            {
-                "session_id": [1, 2, 3],
-                "psychiatrist_side": ["left", "right", "inconclusive"],
-            }
-        ).to_csv(roots.out / "layout.csv", index=False)
+        self.write_layout(roots, ["left", "right", "inconclusive"])
         assert stage.load_layout(roots) == {1: "left", 2: "right"}
+
+    def test_the_column_the_reader_wants_is_the_one_written(self) -> None:
+        assert verify_layout.OCR_SIDE_COLUMN in verify_layout.COLUMN_ORDER
+
+    def test_the_decided_side_is_not_used_as_corroboration(self, roots: DataRoots) -> None:
+        # decided_side falls back to the configured assumption, so reading it
+        # would let an assumption pose as evidence from the labels.
+        rows = [
+            dict.fromkeys(verify_layout.COLUMN_ORDER) | {"session_id": 1, "decided_side": "left"}
+        ]
+        verify_layout.build_frame(rows).to_csv(
+            roots.out / verify_layout.LAYOUT_FILENAME, index=False
+        )
+        assert stage.load_layout(roots) == {}
 
     def test_a_missing_table_means_no_opinion(self, roots: DataRoots) -> None:
         assert stage.load_layout(roots) == {}
