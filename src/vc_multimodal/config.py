@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, Final, Literal, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -727,6 +727,90 @@ class AnalysisTiersConfig(_Base):
         return tuple(family for family, features in self.primary_features.items() if not features)
 
 
+#: Shortest provenance that can plausibly say where an ordering rule came from:
+#: who confirmed it, when, and from what. Well under one sentence is not evidence.
+MIN_PROVENANCE_CHARS: Final = 40
+
+
+class PositionalOrderingConfig(_Base):
+    """How rows are matched to sessions when a table has no identifier.
+
+    This exists for exactly one file: the manuscript's text features, which
+    were written without an identifier column. Matching by position is
+    dangerous - a wrong order attaches each participant's features to someone
+    else and no metric reveals it - so it is allowed only under an ordering
+    rule that is *quoted from the code that wrote the file*, reproduced from
+    the same source that code iterated, and guarded by a row count that must
+    match exactly.
+
+    `provenance` is not decoration. It is the evidence for the rule, it is
+    copied into the run manifest, and it is what a reviewer reads when they
+    ask how the two tables were aligned.
+    """
+
+    # The only rule implemented. Named rather than boolean so that a second
+    # rule cannot be added by accident.
+    rule: Literal["numeric_ascending_session_id"]
+    # Where the rule came from, in words, with a date and a source.
+    provenance: str
+    # The files the lab iterated, relative to $VC_WORK_ROOT. The order is
+    # reproduced from this source rather than from our own inventory, so a
+    # divergence between the two is detected instead of silently averaged over.
+    source_glob: str
+    # The row count this ordering was confirmed against. A different count
+    # means the file is not the file the rule was confirmed for.
+    expected_rows: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _provenance_must_say_something(self) -> Self:
+        if len(self.provenance.strip()) < MIN_PROVENANCE_CHARS:
+            msg = (
+                "text_features.positional.provenance must record where the ordering "
+                "rule came from, in enough detail to be checked later. Matching rows "
+                "by position without that evidence is the one failure mode that "
+                "produces plausible wrong answers."
+            )
+            raise ValueError(msg)
+        if not self.source_glob.strip():
+            msg = "text_features.positional.source_glob must name the files the ordering came from"
+            raise ValueError(msg)
+        return self
+
+
+class TextFeaturesConfig(_Base):
+    """The manuscript's text features: the baseline the new modalities face.
+
+    `identification` decides how a row becomes a session:
+
+    * `identifier` - the table carries a session ID column. Preferred, and the
+      only mode that rests on nothing but the file itself.
+    * `positional` - the table has no identifier, and rows are matched by
+      position under `positional`. Every guard there must pass.
+
+    A table with no identifier and no `positional` block is refused, which is
+    the default behaviour and the right one.
+    """
+
+    # Relative to $VC_WORK_ROOT, so no path to clinical data is committed.
+    path: str
+    identification: Literal["identifier", "positional"]
+    positional: PositionalOrderingConfig | None
+
+    @model_validator(mode="after")
+    def _positional_requires_its_rule(self) -> Self:
+        if self.identification == "positional" and self.positional is None:
+            msg = (
+                "model.text_features.identification='positional' requires a "
+                "model.text_features.positional block stating the ordering rule and "
+                "its provenance"
+            )
+            raise ValueError(msg)
+        if not self.path.strip():
+            msg = "model.text_features.path must name the text feature table"
+            raise ValueError(msg)
+        return self
+
+
 class ModelConfig(_Base):
     """The analysis the label holder runs.
 
@@ -743,7 +827,7 @@ class ModelConfig(_Base):
     feature_sets: Mapping[str, tuple[str, ...]]
     models: tuple[Literal["elastic_net", "random_forest"], ...]
     n_permutations: int = Field(ge=0)
-    text_features: str | None
+    text_features: TextFeaturesConfig | None
     tiers: AnalysisTiersConfig
 
     @model_validator(mode="after")

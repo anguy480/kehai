@@ -129,6 +129,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The manuscript's text features are aligned to sessions under an explicit,
+  documented ordering rule rather than an assumption (docs/decisions/0014). The
+  table has no identifier column, so the rule is quoted from the code that wrote
+  the file, reproduced from the transcript files that code iterated rather than
+  from our own inventory, and guarded by counts that must match exactly: 62
+  transcript files and 62 rows, with either one moving stopping the join. The
+  rule, its provenance, the file's digest and the full resolved session order are
+  recorded in the run manifest. A table with no identifier and no stated rule is
+  still refused.
+
 - `vc aggregate` detects features with no variance across sessions and reports
   them, escalating when a constant feature holds a confirmatory slot: a
   pre-registered slot that cannot support or refute anything needs replacing

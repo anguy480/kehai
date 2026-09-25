@@ -434,7 +434,45 @@ model:
     text_plus_all: ["text", "turns", "prosody", "face_speaking", "face_listening"]
   models: ["elastic_net", "random_forest"]
   n_permutations: 1000
-  text_features: null               # path to the manuscript's text-feature CSV
+  # The manuscript's text features: the baseline the new modalities are
+  # compared against. Relative to $VC_WORK_ROOT, never committed.
+  text_features:
+    path: "nlp_features.csv"
+
+    # How a row becomes a session.
+    #
+    #   identifier  the table carries a session ID column. Preferred, and the
+    #               only mode that rests on nothing but the file itself.
+    #   positional  the table has no identifier; rows are matched by position
+    #               under the rule below, and every guard must pass.
+    #
+    # This file has no identifier column, so it is matched positionally under a
+    # rule quoted from the code that wrote it. A table without an identifier and
+    # without this block is refused rather than guessed at.
+    identification: "positional"
+
+    positional:
+      rule: "numeric_ascending_session_id"
+
+      # Quoted from the lab, 2026-09-24, describing the code that wrote the file.
+      # This is the evidence for the rule, it is copied into the run manifest,
+      # and it is what a reviewer reads when they ask how the tables were
+      # aligned. Do not paraphrase it away.
+      provenance: >-
+        Rows were written by iterating transcript files with
+        sorted(dir_path.glob(extension), key=lambda p: int(p.stem)), so the order
+        is numeric ascending by session ID across the whole set
+        (1, 3, 6 ... 62, 102 ... 261), not lexicographic. Confirmed by the lab on
+        2026-09-24, quoting the original manuscript code.
+
+      # The order is reproduced from the same files the lab iterated, rather
+      # than from our own inventory, so a divergence between the two is detected
+      # instead of silently averaged over.
+      source_glob: "diarization/diarizations_original/*.srt"
+
+      # The row count the ordering was confirmed against. A different count means
+      # this is not the file the rule was confirmed for, and the stage stops.
+      expected_rows: 62
 
   # The confirmatory/exploratory split. See docs/decisions/0012.
   #

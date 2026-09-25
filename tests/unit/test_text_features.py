@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
+from vc_multimodal.config import TextFeaturesConfig, load_config
 from vc_multimodal.modeling import text_features as tf
 
 
@@ -189,3 +191,270 @@ class TestJoin:
         assert "[1]" in text
         assert "[3]" in text
         assert "0.5" not in text
+
+
+# ---------------------------------------------------------------------------
+# Matching rows to sessions by position, under a stated ordering rule
+# ---------------------------------------------------------------------------
+LAB_PROVENANCE = (
+    "Rows were written by iterating transcript files with "
+    "sorted(dir_path.glob(extension), key=lambda p: int(p.stem)), so the order is "
+    "numeric ascending by session ID. Confirmed by the lab on 2026-09-24."
+)
+
+
+def positional_config(
+    *,
+    expected_rows: int = 3,
+    source_glob: str = "diarization/*.srt",
+    provenance: str = LAB_PROVENANCE,
+    path: str = "nlp.csv",
+) -> TextFeaturesConfig:
+    return TextFeaturesConfig.model_validate(
+        {
+            "path": path,
+            "identification": "positional",
+            "positional": {
+                "rule": "numeric_ascending_session_id",
+                "provenance": provenance,
+                "source_glob": source_glob,
+                "expected_rows": expected_rows,
+            },
+        }
+    )
+
+
+def make_transcripts(work: Path, session_ids: list[int], suffix: str = ".srt") -> None:
+    """Stand-ins for the files the lab iterated. Content is irrelevant here."""
+    directory = work / "diarization"
+    directory.mkdir(parents=True, exist_ok=True)
+    for session_id in session_ids:
+        (directory / f"{session_id}{suffix}").write_text("1\n00:00:00,000 --> 00:00:01,000\nx\n")
+
+
+class TestResolvingTheOrderingRule:
+    def test_the_order_is_numeric_ascending_not_lexicographic(self, tmp_path: Path) -> None:
+        # The distinction that matters for this cohort: 62 precedes 102, and a
+        # lexicographic sort would put 102 first.
+        make_transcripts(tmp_path, [62, 102, 7])
+        plan = tf.resolve_positional(tmp_path, positional_config())
+        assert plan.session_ids == (7, 62, 102)
+
+    def test_the_provenance_is_carried_on_the_plan(self, tmp_path: Path) -> None:
+        make_transcripts(tmp_path, [1, 2, 3])
+        plan = tf.resolve_positional(tmp_path, positional_config())
+        assert "int(p.stem)" in plan.provenance
+        assert "2026-09-24" in plan.provenance
+
+    def test_a_row_count_change_stops_the_join(self, tmp_path: Path) -> None:
+        # The guard the lab's confirmation rests on: this is no longer the set
+        # the ordering was confirmed against.
+        make_transcripts(tmp_path, [1, 2, 3, 4])
+        with pytest.raises(tf.TextFeatureError, match="confirmed against 3 file"):
+            tf.resolve_positional(tmp_path, positional_config(expected_rows=3))
+
+    def test_the_count_error_names_both_numbers(self, tmp_path: Path) -> None:
+        make_transcripts(tmp_path, [1, 2])
+        with pytest.raises(tf.TextFeatureError) as excinfo:
+            tf.resolve_positional(tmp_path, positional_config(expected_rows=3))
+        message = str(excinfo.value)
+        assert "confirmed against 3" in message
+        assert "matches 2" in message
+
+    def test_no_matching_files_is_refused(self, tmp_path: Path) -> None:
+        (tmp_path / "diarization").mkdir()
+        with pytest.raises(tf.TextFeatureError, match="no files matched"):
+            tf.resolve_positional(tmp_path, positional_config())
+
+    def test_a_filename_that_is_not_a_session_id_is_refused(self, tmp_path: Path) -> None:
+        # The lab's int(path.stem) would have raised on this file, so its
+        # presence means we are looking at a different set than they were.
+        make_transcripts(tmp_path, [1, 2])
+        (tmp_path / "diarization" / "notes.srt").write_text("x")
+        with pytest.raises(tf.TextFeatureError, match="not a session ID"):
+            tf.resolve_positional(tmp_path, positional_config())
+
+    def test_only_the_configured_extension_is_counted(self, tmp_path: Path) -> None:
+        # The directory also holds .txt files, which carry no timestamps.
+        make_transcripts(tmp_path, [1, 2, 3])
+        make_transcripts(tmp_path, [1, 2, 3], suffix=".txt")
+        plan = tf.resolve_positional(tmp_path, positional_config())
+        assert plan.session_ids == (1, 2, 3)
+
+
+class TestLoadingByPosition:
+    def table(self, path: Path, n_rows: int) -> Path:
+        frame = pd.DataFrame(
+            {
+                "Jaccard": [0.1 * (i + 1) for i in range(n_rows)],
+                "Bert": [0.5] * n_rows,
+            }
+        )
+        return write_csv(path, frame)
+
+    def test_rows_are_attached_in_the_rule_order(self, tmp_path: Path) -> None:
+        make_transcripts(tmp_path, [62, 102, 7])
+        path = self.table(tmp_path / "nlp.csv", 3)
+        loaded = tf.load(path, positional=tf.resolve_positional(tmp_path, positional_config()))
+        assert list(loaded.frame["session_id"]) == [7, 62, 102]
+        # First row belongs to the lowest session ID, not the first file listed.
+        assert loaded.frame.iloc[0]["text__jaccard"] == pytest.approx(0.1)
+        assert loaded.frame.loc[loaded.frame.session_id == 102, "text__jaccard"].iloc[
+            0
+        ] == pytest.approx(0.3)
+
+    def test_the_identification_mode_is_recorded(self, tmp_path: Path) -> None:
+        make_transcripts(tmp_path, [1, 2, 3])
+        loaded = tf.load(
+            self.table(tmp_path / "nlp.csv", 3),
+            positional=tf.resolve_positional(tmp_path, positional_config()),
+        )
+        assert loaded.identification == "positional"
+        assert loaded.id_column is None
+
+    def test_a_table_with_the_wrong_row_count_is_refused(self, tmp_path: Path) -> None:
+        make_transcripts(tmp_path, [1, 2, 3])
+        plan = tf.resolve_positional(tmp_path, positional_config())
+        path = self.table(tmp_path / "nlp.csv", 4)
+        with pytest.raises(tf.TextFeatureError, match="has 4 row"):
+            tf.load(path, positional=plan)
+
+    def test_the_row_count_error_names_the_confirmed_count(self, tmp_path: Path) -> None:
+        make_transcripts(tmp_path, [1, 2, 3])
+        plan = tf.resolve_positional(tmp_path, positional_config())
+        with pytest.raises(tf.TextFeatureError) as excinfo:
+            tf.load(self.table(tmp_path / "nlp.csv", 2), positional=plan)
+        assert "confirmed against 3" in str(excinfo.value)
+
+    def test_an_identifier_wins_over_the_ordering_rule(self, tmp_path: Path) -> None:
+        # An identifier needs no external promise, so it is always preferred.
+        make_transcripts(tmp_path, [1, 2, 3])
+        frame = pd.DataFrame({"session_id": [102, 7, 62], "Jaccard": [0.1, 0.2, 0.3]})
+        loaded = tf.load(
+            write_csv(tmp_path / "nlp.csv", frame),
+            positional=tf.resolve_positional(tmp_path, positional_config()),
+        )
+        assert loaded.identification == "identifier"
+        assert loaded.plan is None
+        by_session = loaded.frame.set_index("session_id")["text__jaccard"]
+        assert by_session.loc[102] == pytest.approx(0.1)
+
+    def test_an_outcome_column_is_still_refused_in_positional_mode(self, tmp_path: Path) -> None:
+        make_transcripts(tmp_path, [1, 2, 3])
+        frame = pd.DataFrame({"Jaccard": [0.1, 0.2, 0.3], "K6_total": [1, 2, 3]})
+        with pytest.raises(tf.TextFeatureError, match="questionnaire outcomes"):
+            tf.load(
+                write_csv(tmp_path / "nlp.csv", frame),
+                positional=tf.resolve_positional(tmp_path, positional_config()),
+            )
+
+    def test_the_refusal_path_survives_for_a_table_with_no_rule(self, tmp_path: Path) -> None:
+        with pytest.raises(tf.TextFeatureError, match="no identifier column"):
+            tf.load(self.table(tmp_path / "nlp.csv", 3))
+
+    def test_load_configured_resolves_the_rule_itself(self, tmp_path: Path) -> None:
+        make_transcripts(tmp_path, [62, 102, 7])
+        self.table(tmp_path / "nlp.csv", 3)
+        loaded = tf.load_configured(tmp_path, positional_config())
+        assert list(loaded.frame["session_id"]) == [7, 62, 102]
+
+    def test_load_configured_says_so_when_the_table_is_missing(self, tmp_path: Path) -> None:
+        make_transcripts(tmp_path, [1, 2, 3])
+        with pytest.raises(tf.TextFeatureError, match=r"not at nlp\.csv"):
+            tf.load_configured(tmp_path, positional_config())
+
+
+class TestManifestRecord:
+    def test_the_ordering_rule_and_its_provenance_reach_the_manifest(self, tmp_path: Path) -> None:
+        make_transcripts(tmp_path, [62, 102, 7])
+        write_csv(tmp_path / "nlp.csv", pd.DataFrame({"Jaccard": [0.1, 0.2, 0.3]}))
+        record = tf.load_configured(tmp_path, positional_config()).manifest_record()
+        assert record["identification"] == "positional"
+        assert record["ordering"]["rule"] == "numeric_ascending_session_id"
+        assert "int(p.stem)" in record["ordering"]["provenance"]
+        assert record["ordering"]["session_ids"] == [7, 62, 102]
+        assert record["ordering"]["expected_rows"] == 3
+
+    def test_the_record_names_the_exact_file_used(self, tmp_path: Path) -> None:
+        make_transcripts(tmp_path, [1, 2, 3])
+        write_csv(tmp_path / "nlp.csv", pd.DataFrame({"Jaccard": [0.1, 0.2, 0.3]}))
+        record = tf.load_configured(tmp_path, positional_config()).manifest_record()
+        assert record["source"] == "nlp.csv"
+        assert len(record["sha256"]) == 64
+
+    def test_the_digest_changes_when_the_file_does(self, tmp_path: Path) -> None:
+        make_transcripts(tmp_path, [1, 2, 3])
+        write_csv(tmp_path / "nlp.csv", pd.DataFrame({"Jaccard": [0.1, 0.2, 0.3]}))
+        first = tf.load_configured(tmp_path, positional_config()).sha256
+        write_csv(tmp_path / "nlp.csv", pd.DataFrame({"Jaccard": [0.9, 0.2, 0.3]}))
+        assert tf.load_configured(tmp_path, positional_config()).sha256 != first
+
+    def test_an_identifier_join_records_the_column_and_no_ordering(self, tmp_path: Path) -> None:
+        frame = pd.DataFrame({"session_id": [1, 2], "Jaccard": [0.1, 0.2]})
+        record = tf.load(write_csv(tmp_path / "nlp.csv", frame)).manifest_record()
+        assert record["identification"] == "identifier"
+        assert record["id_column"] == "session_id"
+        assert "ordering" not in record
+
+    def test_the_record_names_features_and_never_values(self, tmp_path: Path) -> None:
+        frame = pd.DataFrame({"session_id": [1, 2], "Jaccard": [0.123456, 0.2]})
+        record = tf.load(write_csv(tmp_path / "nlp.csv", frame)).manifest_record()
+        assert record["features"] == ["text__jaccard"]
+        assert "0.123456" not in str(record)
+
+
+class TestProvenanceIsRequired:
+    def test_the_positional_block_must_be_stated_either_way(self) -> None:
+        # Every setting in this project is explicit, so an omitted block is a
+        # missing field rather than a silent default.
+        with pytest.raises(ValidationError, match="positional"):
+            TextFeaturesConfig.model_validate({"path": "nlp.csv", "identification": "positional"})
+
+    def test_positional_mode_with_an_empty_block_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="requires a"):
+            TextFeaturesConfig.model_validate(
+                {"path": "nlp.csv", "identification": "positional", "positional": None}
+            )
+
+    def test_identifier_mode_needs_no_ordering_rule(self) -> None:
+        config = TextFeaturesConfig.model_validate(
+            {"path": "nlp.csv", "identification": "identifier", "positional": None}
+        )
+        assert config.positional is None
+
+    def test_a_bare_assertion_is_not_provenance(self) -> None:
+        with pytest.raises(ValidationError, match="where the ordering rule came from"):
+            positional_config(provenance="sorted by id")
+
+    def test_the_default_config_carries_the_labs_wording(self, tmp_path: Path) -> None:
+        config = load_config(Path("config/default.yaml"))
+        text = config.model.text_features
+        assert text is not None
+        assert text.identification == "positional"
+        assert text.positional is not None
+        assert text.positional.expected_rows == 62
+        assert "int(p.stem)" in text.positional.provenance
+        assert "not lexicographic" in text.positional.provenance
+
+
+class TestPositionalJoinWarnsOnDivergentCohorts:
+    def test_a_session_we_have_and_they_did_not_is_reported(
+        self, tmp_path: Path, package_logs: pytest.LogCaptureFixture
+    ) -> None:
+        make_transcripts(tmp_path, [1, 2, 3])
+        write_csv(tmp_path / "nlp.csv", pd.DataFrame({"Jaccard": [0.1, 0.2, 0.3]}))
+        text = tf.load_configured(tmp_path, positional_config())
+        ours = pd.DataFrame({"session_id": [1, 2, 3, 9], "turns__latency_median": [1.0] * 4})
+        _, report = tf.join(ours, text)
+        assert report.features_only == (9,)
+        assert "saw different data" in package_logs.text
+
+    def test_matching_cohorts_produce_no_warning(
+        self, tmp_path: Path, package_logs: pytest.LogCaptureFixture
+    ) -> None:
+        make_transcripts(tmp_path, [1, 2, 3])
+        write_csv(tmp_path / "nlp.csv", pd.DataFrame({"Jaccard": [0.1, 0.2, 0.3]}))
+        text = tf.load_configured(tmp_path, positional_config())
+        ours = pd.DataFrame({"session_id": [1, 2, 3], "turns__latency_median": [1.0] * 3})
+        tf.join(ours, text)
+        assert "saw different data" not in package_logs.text
