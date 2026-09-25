@@ -129,6 +129,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `vc assign-speakers` decides which diarized speaker is the participant, which
+  every later stage depends on and nothing downstream can detect if it is wrong.
+  Speaker embeddings (ECAPA-TDNN, pinned) against the psychiatrist reference
+  clips decide it; mouth movement per tile and the Zoom name labels corroborate
+  it where they can, and disagreement is flagged rather than used to break a
+  tie. Only the ranking is used, never an absolute similarity, because absolute
+  scores differ systematically between the two recruitment waves. The stage also
+  compares the reference clips against each other, with a within-clip control,
+  which is what answers whether the two recurring Zoom labels are two people.
+
 - `vc handoff` builds the bundle the label holder receives: the feature table,
   a dictionary describing every column, the quality columns in a separate file
   because they are not predictors, the text baseline with explicit session IDs, a

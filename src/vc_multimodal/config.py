@@ -447,6 +447,43 @@ class LabelOcrConfig(_Base):
         return self
 
 
+class SpeakerEmbeddingConfig(_Base):
+    """The speaker-embedding model, pinned.
+
+    A different model, or a different revision of the same model, gives
+    different similarities from the same audio, so the revision is pinned and
+    recorded. The weights live under `$VC_WORK_ROOT`, not in a user-wide cache,
+    so a run depends on nothing outside the project's own data roots.
+    """
+
+    backend: Literal["ecapa"]
+    # Model identifier and the exact revision to fetch.
+    source: str
+    revision: str | None
+    # Both relative to $VC_WORK_ROOT.
+    cache_dir: str
+    hf_home: str
+    # Diarized segments shorter than this are left out of a speaker's sample:
+    # short segments are the ones most likely to hold the other person's voice.
+    min_segment_s: float = Field(gt=0.0)
+    # Cap on how much speech is embedded per speaker. More is not better past a
+    # point, and this keeps the stage's cost predictable.
+    max_seconds_per_speaker: float = Field(gt=0.0)
+    # A speaker with less usable speech than this is not assigned a role at
+    # all, rather than being assigned one on almost no evidence.
+    min_speech_s: float = Field(gt=0.0)
+
+    @model_validator(mode="after")
+    def _sample_must_exceed_a_segment(self) -> Self:
+        if self.max_seconds_per_speaker < self.min_segment_s:
+            msg = (
+                "speakers.embedding.max_seconds_per_speaker is below min_segment_s, so "
+                "no segment could ever be used"
+            )
+            raise ValueError(msg)
+        return self
+
+
 class SpeakerAssignConfig(_Base):
     """How diarized speaker labels become roles.
 
@@ -456,8 +493,7 @@ class SpeakerAssignConfig(_Base):
     small margin raises a flag rather than silently choosing.
     """
 
-    embedding_model: str
-    embedding_token_env: str
+    embedding: SpeakerEmbeddingConfig
     # Which side the psychiatrist is expected to be on. A default derived from
     # the sessions checked by hand, not a guarantee: it is used only where OCR
     # is unavailable or inconclusive, and any disagreement with OCR is recorded

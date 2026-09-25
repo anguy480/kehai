@@ -51,6 +51,9 @@ pyannote = ["pyannote-audio>=3.1"]
 # which tile holds the psychiatrist. macOS only; no recognised text is ever
 # printed, logged or written. See docs/decisions/0009.
 ocr = ["pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'"]
+speaker = [
+    "speechbrain>=1.0",
+]
 
 [project.scripts]
 vc = "vc_multimodal.cli:app"
@@ -142,6 +145,7 @@ module = [
   "parselmouth.*", "silero_vad.*", "cv2.*", "mediapipe.*",
   "pyannote.*", "joblib.*", "pandera.*", "sklearn.*", "scipy.*",
   "Quartz.*", "Vision.*", "Foundation.*", "objc.*",
+  "speechbrain.*",
 ]
 ignore_missing_imports = true
 

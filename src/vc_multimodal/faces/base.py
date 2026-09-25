@@ -40,6 +40,14 @@ class FaceBackend(ABC):
     def version(self) -> str:
         """Identifier recorded in the run manifest."""
 
+    def close(self) -> None:  # noqa: B027 - the no-op default is the point
+        """Release whatever the backend holds open.
+
+        Not abstract: an importer that reads a CSV has nothing to release, and
+        making every backend write an empty method would say nothing. Backends
+        holding a model override this.
+        """
+
     @abstractmethod
     def measure_session(
         self,

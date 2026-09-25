@@ -143,7 +143,14 @@ def test_a_twelve_minute_recording_at_five_fps():
 # the shipped configuration must satisfy its own rule
 # ---------------------------------------------------------------------------
 def test_the_configured_rates_divide_the_real_frame_rate(default_config):
-    """All 62 recordings are a constant 25 fps, as `vc inventory` confirmed."""
+    """All 62 recordings are a constant 25 fps, as `vc inventory` confirmed.
+
+    Both configured rates take every 5th frame. The mouth cross-check was
+    halved to this rate once the correlation it measures was clear: a mouth
+    against a speech timeline made of multi-second turns, not against
+    individual syllables, so the extra frames bought nothing and cost a
+    landmarker call each.
+    """
     native = 25.0
     assert resolve_sampling(native, default_config.face.sample_fps).step == 5
-    assert resolve_sampling(native, default_config.speakers.mouth_crosscheck.sample_fps).step == 2
+    assert resolve_sampling(native, default_config.speakers.mouth_crosscheck.sample_fps).step == 5

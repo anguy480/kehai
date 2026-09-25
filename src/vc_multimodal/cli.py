@@ -21,6 +21,7 @@ from vc_multimodal import __version__
 from vc_multimodal.config import DEFAULT_CONFIG_PATH, AppConfig, ConfigError, load_config
 from vc_multimodal.contracts import ContractError
 from vc_multimodal.diarization import DiarizationError
+from vc_multimodal.embeddings import EmbeddingError
 from vc_multimodal.faces import FaceError
 from vc_multimodal.ffmpeg import FfmpegError, FfmpegTools
 from vc_multimodal.logging_setup import configure_logging, log_file_path
@@ -37,6 +38,7 @@ from vc_multimodal.prosody import ProsodyError
 from vc_multimodal.roles import RolesUnavailableError
 from vc_multimodal.runner import StageReport
 from vc_multimodal.stages import aggregate as aggregate_stage
+from vc_multimodal.stages import assign_speakers as assign_stage
 from vc_multimodal.stages import diarize as diarize_stage
 from vc_multimodal.stages import extract_audio as extract_audio_stage
 from vc_multimodal.stages import face as face_stage
@@ -47,6 +49,7 @@ from vc_multimodal.stages import prosody as prosody_stage
 from vc_multimodal.stages import turns as turns_stage
 from vc_multimodal.stages import vad as vad_stage
 from vc_multimodal.stages import verify_layout as verify_layout_stage
+from vc_multimodal.stages.assign_speakers import AssignError
 from vc_multimodal.stages.handoff import HandoffError
 
 app = typer.Typer(
@@ -625,6 +628,40 @@ def handoff(
         typer.echo(line)
     typer.echo("")
     typer.echo(f"read {result.path / handoff_stage.README_FILE} before sending it on")
+
+
+@app.command(name="assign-speakers")
+def assign_speakers(ctx: typer.Context) -> None:
+    """Work out which diarized speaker is the participant.
+
+    Speaker embeddings against the psychiatrist reference clips decide it.
+    Mouth movement per tile and the Zoom name labels corroborate it where they
+    can, and any disagreement is flagged rather than used to break a tie.
+
+    Prints similarities, margins and session IDs. Nothing derived from what was
+    said, and no recognised label text, is printed or written.
+    """
+    setup = _setup(ctx, assign_stage.STAGE)
+
+    try:
+        result = assign_stage.run(
+            setup.config,
+            setup.roots,
+            session_ids=setup.session_ids,
+            workers=setup.workers,
+            force=setup.force,
+            tools=setup.tools,
+        )
+    except (AssignError, EmbeddingError, ContractError) as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo(f"\nwrote {result.path}")
+    typer.echo("")
+    for line in assign_stage.summarise(result, setup.config):
+        typer.echo(line)
+    typer.echo("")
+    _print_report(result.report)
 
 
 if __name__ == "__main__":  # pragma: no cover - module entry point

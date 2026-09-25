@@ -179,8 +179,31 @@ diarization:
 
 speakers:
   # Primary method: speaker-embedding similarity against a reference clip.
-  embedding_model: "pyannote/embedding"
-  embedding_token_env: "HF_TOKEN"
+  #
+  # ECAPA-TDNN via SpeechBrain, needing the optional `speaker` extra
+  # (`uv sync --extra speaker`) and no access token. Validated on this cohort
+  # with controls in both directions before being adopted: two halves of one
+  # reference clip score 0.72-0.79 against each other, while a psychiatrist and
+  # a participant from the same session score 0.18-0.68. Those ranges overlap at
+  # the top, which is exactly why only the RANKING is used and never an absolute
+  # threshold - see docs/decisions/0008.
+  embedding:
+    backend: "ecapa"
+    source: "speechbrain/spkrec-ecapa-voxceleb"
+    # Pinned: a different revision gives different similarities from the same
+    # audio. This is the revision the validation above was run against.
+    revision: "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"  # pragma: allowlist secret
+    cache_dir: "models/ecapa"
+    hf_home: "models/hf"
+
+    # Short diarized segments are the ones most likely to carry the other
+    # person's voice, since the diarizer partitions time and cannot represent
+    # overlap. Leaving them out sharpens the sample.
+    min_segment_s: 1.0
+    max_seconds_per_speaker: 120.0
+    # Below this much usable speech a speaker gets no role rather than a role
+    # guessed from almost nothing.
+    min_speech_s: 5.0
 
   # Which side of the frame the psychiatrist is expected to be on. Set from
   # sessions checked by hand, so treat it as a DEFAULT, not a guarantee.
@@ -244,14 +267,27 @@ speakers:
     psychiatrist_label_env: "VC_PSYCHIATRIST_LABELS"
 
   # One clip per psychiatrist, relative to $VC_WORK_ROOT/reference/.
-  # UNCONFIRMED whether the same psychiatrist ran every session, especially
-  # across the two waves, so several clips are supported.
-  reference_clips: []
-  # Optional CSV (session_id,psychiatrist_id) restricting each session to one
-  # reference clip. Relative to $VC_WORK_ROOT. Null means compare against all.
-  session_psychiatrist_map: null
+  # Two clips, cut by hand from sessions carrying each of the two recurring
+  # Zoom labels that OCR found. Whether they are two people or one person who
+  # renamed themselves is reported by `vc assign-speakers`, which compares the
+  # clips against each other directly.
+  reference_clips:
+    - psychiatrist_id: "psy_a"
+      path: "psy_a.wav"
+    - psychiatrist_id: "psy_b"
+      path: "psy_b.wav"
+
+  # CSV (session_id,reference_clip) naming the clip expected for each session,
+  # relative to $VC_WORK_ROOT. Every session is scored against EVERY clip
+  # regardless: comparing to all of them costs nothing once the session's own
+  # speakers are embedded, and cross-clip agreement is a free robustness check.
+  # This map says which clip is DECISIVE where they disagree, and a session
+  # absent from it is decided by the best match across all clips.
+  session_psychiatrist_map: "session_psychiatrist_map.csv"
 
   # Flag the session if the best-to-second-best similarity gap is below this.
+  # Observed margins on the sessions checked by hand run 0.20 to 0.62, so 0.10
+  # flags a genuinely ambiguous session rather than a merely unremarkable one.
   min_margin: 0.10
 
   mouth_crosscheck:
@@ -263,11 +299,13 @@ speakers:
     # the two is recorded as a QC column.
     enabled: true
     tiles: null             # null means every tile in video.tiles
-    # Also must divide the native 25 fps exactly. Kept higher than
-    # face.sample_fps: correlating a mouth against a speech timeline benefits
-    # from temporal resolution, whereas session-level summaries do not.
-    # 12.5 fps is every 2nd frame.
-    sample_fps: 12.5
+    # Must divide the native 25 fps exactly. 5.0 fps is every 5th frame.
+    #
+    # The correlation being measured is between a mouth moving and a speech
+    # timeline made of turns lasting seconds, not between a mouth and
+    # individual syllables, so temporal resolution past a few frames a second
+    # buys nothing and costs a landmarker call per frame per tile.
+    sample_fps: 5.0
     min_correlation: 0.15   # below this, the visual evidence is too weak to use
     min_separation: 0.10    # required gap between best and second-best tile
 
