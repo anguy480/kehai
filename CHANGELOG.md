@@ -129,6 +129,25 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `vc model` runs the analysis on the machine that holds the questionnaire
+  scores: leave-one-participant-out as the primary estimate for comparability
+  with the manuscript, repeated 5-fold beside it with sign disagreements
+  reported, the pre-registered comparisons as paired per-session Wilcoxon tests
+  corrected by Holm, a permutation null under a named scheme, and a markdown
+  summary written for someone who did not write the code. No label, prediction
+  or residual is written to any output. See `docs/decisions/0015`.
+
+### Fixed
+
+- The elastic net explored penalties a thousand times weaker than the one that
+  zeroes every coefficient, which at 54 features on 62 sessions is effectively
+  unpenalised least squares. Coordinate descent does not converge there:
+  measured on that shape, the default settings produced 124 non-converged fits
+  per outer fold, each returning whatever coefficients the iteration limit left
+  behind, with no error raised and no sign of it in the output. The path is now
+  bounded at `eps = 1e-2`, which still spans two orders of magnitude, converges
+  everywhere tested, and is 16 times faster in that regime.
+
 - `vc assign-speakers` decides which diarized speaker is the participant, which
   every later stage depends on and nothing downstream can detect if it is wrong.
   Speaker embeddings (ECAPA-TDNN, pinned) against the psychiatrist reference

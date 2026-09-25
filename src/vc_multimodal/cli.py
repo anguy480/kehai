@@ -44,6 +44,7 @@ from vc_multimodal.stages import extract_audio as extract_audio_stage
 from vc_multimodal.stages import face as face_stage
 from vc_multimodal.stages import handoff as handoff_stage
 from vc_multimodal.stages import inventory as inventory_stage
+from vc_multimodal.stages import model as model_stage
 from vc_multimodal.stages import preview as preview_stage
 from vc_multimodal.stages import prosody as prosody_stage
 from vc_multimodal.stages import turns as turns_stage
@@ -51,6 +52,7 @@ from vc_multimodal.stages import vad as vad_stage
 from vc_multimodal.stages import verify_layout as verify_layout_stage
 from vc_multimodal.stages.assign_speakers import AssignError
 from vc_multimodal.stages.handoff import HandoffError
+from vc_multimodal.stages.model import ModelError
 
 app = typer.Typer(
     name="vc",
@@ -662,6 +664,60 @@ def assign_speakers(ctx: typer.Context) -> None:
         typer.echo(line)
     typer.echo("")
     _print_report(result.report)
+
+
+@app.command()
+def model(
+    ctx: typer.Context,
+    labels: Annotated[
+        Path,
+        typer.Option(
+            "--labels",
+            help=(
+                "CSV of questionnaire scores: a session_id column and one column per "
+                "target. Read here and nowhere else; no label is written to any output."
+            ),
+        ),
+    ],
+    features: Annotated[
+        Path | None,
+        typer.Option(
+            "--features",
+            help="Feature table. Defaults to features.csv in the output root.",
+        ),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Where results go. Defaults to <output root>/model."),
+    ] = None,
+) -> None:
+    """Fit the models. Run this where the questionnaire scores live.
+
+    The confirmatory tests are fixed by the configuration, which was written
+    before any label was seen. Leave-one-participant-out is primary, repeated
+    k-fold is reported beside it, and the pre-registered comparisons are
+    corrected together.
+
+    No label, prediction or residual is written to any output.
+    """
+    setup = _setup(ctx, model_stage.STAGE)
+    table = features or aggregate_stage.features_path(setup.roots)
+
+    try:
+        result = model_stage.run(
+            setup.config,
+            setup.roots,
+            features_path=table,
+            labels_path=labels,
+            out_dir=out,
+        )
+    except (ModelError, ContractError) as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo("")
+    for line in model_stage.summarise(result):
+        typer.echo(line)
 
 
 if __name__ == "__main__":  # pragma: no cover - module entry point
