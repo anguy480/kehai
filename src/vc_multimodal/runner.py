@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal, Protocol, TypeVar, cast
 
 import pandas as pd
@@ -87,6 +87,17 @@ class StageReport:
     def ok(self) -> bool:
         """Whether every session either completed or was skipped."""
         return not self.failed
+
+    def with_notes(self, extra: Sequence[str]) -> StageReport:
+        """The same report with more notes.
+
+        Stages learn some things only after the per-session work is done - how
+        many existing rows were kept, for instance - and those belong in the
+        report the user reads rather than in the log alone.
+        """
+        if not extra:
+            return self
+        return replace(self, notes=(*self.notes, *extra))
 
     def to_frame(self) -> pd.DataFrame:
         """The per-session outcomes as a table, for QC reporting."""

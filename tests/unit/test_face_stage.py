@@ -870,18 +870,31 @@ def test_the_backend_is_recorded_beside_the_measurements(
 
 
 @pytest.mark.slow
-def test_deleting_the_qc_table_does_not_lose_the_backend(
+def test_deleting_the_qc_table_remeasures_rather_than_writing_a_stub(
     roots: DataRoots, default_config: AppConfig, face_session: Any, model_available: Path
 ):
-    """Otherwise the one fact that makes a later table safe to assemble is gone."""
+    """A session with no QC row is not done, whatever else is on disk.
+
+    This used to skip the session and assemble a row from the backend sidecar
+    alone: an identifier and a backend name with every measurement empty. That
+    row was indistinguishable from a failed measurement and made every rate
+    computed over the table wrong. A session whose row is missing is now
+    re-measured, which is the only way to get a complete one.
+    """
     face_session(28)
     stage.run(default_config, roots, workers=1)
     (roots.out / stage.FACE_QC_FILENAME).unlink()
 
     result = stage.run(default_config, roots, workers=1)
 
-    assert len(result.report.skipped) == 1
-    assert result.frame.iloc[0]["backend"] == "mediapipe"
+    assert len(result.report.skipped) == 0
+    assert len(result.report.succeeded) == 1
+    row = result.frame.iloc[0]
+    assert row["backend"] == "mediapipe"
+    # The measurement columns are what a stub left empty.
+    assert pd.notna(row["n_frames_sampled"])
+    assert pd.notna(row["n_frames_measured"])
+    assert pd.notna(row["dropped_fraction"])
 
 
 @pytest.mark.slow
@@ -930,3 +943,100 @@ def test_stored_backends_ignores_unrelated_files(roots: DataRoots, default_confi
 
     assert set(stored) == {28}
     assert stored[28]["backend"] == "mediapipe"
+
+
+# ---------------------------------------------------------------------------
+# partial runs and skipped sessions
+#
+# Both of these were shipped broken and found by piloting on three sessions:
+# `vc --force --sessions 130 face` left face_qc.csv holding only session 130,
+# and before that, session 130 had a row with every column empty.
+# ---------------------------------------------------------------------------
+@pytest.mark.slow
+def test_a_partial_rerun_keeps_the_rows_it_did_not_measure(
+    roots: DataRoots, default_config: AppConfig, face_session: Any, model_available: Path
+):
+    """The bug: writing only this run's rows deleted every other session's.
+
+    With 62 sessions and individual reruns, this silently destroyed coverage on
+    every run, and nothing failed while it happened.
+    """
+    face_session(28)
+    face_session(3)
+    first = stage.run(default_config, roots, workers=1)
+    assert sorted(first.frame["session_id"]) == [3, 28]
+
+    rerun = stage.run(default_config, roots, session_ids=[3], workers=1, force=True)
+
+    assert sorted(rerun.frame["session_id"]) == [3, 28]
+    assert len(rerun.report.succeeded) == 1
+
+
+@pytest.mark.slow
+def test_a_skipped_session_keeps_a_populated_row(
+    roots: DataRoots, default_config: AppConfig, face_session: Any, model_available: Path
+):
+    """The other bug: a skipped session was written as a row of empty columns.
+
+    Empty is indistinguishable from a failed measurement, so it made the summary
+    report rates over sessions that had never been measured.
+    """
+    face_session(28)
+    stage.run(default_config, roots, workers=1)
+
+    again = stage.run(default_config, roots, workers=1)
+
+    assert len(again.report.skipped) == 1
+    row = again.frame.iloc[0]
+    for column in (
+        "backend",
+        "n_frames_sampled",
+        "n_frames_measured",
+        "dropped_fraction",
+        "letterbox_detected",
+    ):
+        assert pd.notna(row[column]), f"{column} is empty for a skipped session"
+
+
+@pytest.mark.slow
+def test_a_partial_rerun_leaves_the_untouched_rows_unchanged(
+    roots: DataRoots, default_config: AppConfig, face_session: Any, model_available: Path
+):
+    """A kept row is the row that was written, not a reconstruction of it."""
+    face_session(28)
+    face_session(3)
+    first = stage.run(default_config, roots, workers=1)
+    before = first.frame.set_index("session_id").loc[28].to_dict()
+
+    rerun = stage.run(default_config, roots, session_ids=[3], workers=1, force=True)
+
+    after = rerun.frame.set_index("session_id").loc[28].to_dict()
+    for column, value in before.items():
+        if pd.isna(value):
+            assert pd.isna(after[column]), column
+        else:
+            assert after[column] == value, column
+
+
+def test_the_summary_counts_rates_over_measured_sessions_only(default_config: AppConfig):
+    """A row with no value is not a session where letterboxing was absent.
+
+    This is what made the pilot report "letterbox corrected in 2 of 3 sessions"
+    when the answer was 2 of 2 measured.
+    """
+    frame = pd.DataFrame(
+        {
+            "session_id": [1, 2, 3],
+            "wave": ["winter"] * 3,
+            "backend": ["mediapipe"] * 3,
+            "n_frames_sampled": [50, 50, None],
+            "n_frames_measured": [50, 50, None],
+            "frame_step": [5, 5, None],
+            "dropped_fraction": [0.0, 0.0, None],
+            "letterbox_detected": [True, True, None],
+            "flags": ["", "", ""],
+        }
+    )
+    lines = "\n".join(stage.summarise(frame, default_config))
+    assert "2 of 2 measured session(s)" in lines
+    assert "1 session(s) not measured" in lines

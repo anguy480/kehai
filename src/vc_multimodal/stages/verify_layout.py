@@ -31,7 +31,7 @@ from collections import Counter
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 import cv2
 import pandas as pd
@@ -52,6 +52,7 @@ from vc_multimodal.logging_setup import get_logger
 from vc_multimodal.ocr import OcrBackend, OcrError, get_backend
 from vc_multimodal.paths import DataRoots, RawSession, discover_sessions, select_sessions
 from vc_multimodal.runner import StageReport, run_sessions
+from vc_multimodal.session_tables import carry_forward, combine
 from vc_multimodal.stages.preview import sample_times
 
 logger = get_logger(__name__)
@@ -941,11 +942,35 @@ def run(
             notes=(*report.notes, *extra_notes),
         )
 
-    frame = build_frame(rows)
-    validate(frame, LAYOUT_SCHEMA, context=STAGE)
+    # Rows for sessions outside this run are kept rather than deleted. One
+    # caveat specific to this stage: the psychiatrist's label is identified by
+    # recurrence *across the cohort in the run*, so a carried row was decided
+    # against a different set of sessions than a fresh one. The `method` column
+    # records how each row was decided, and a subset run cannot establish
+    # recurrence at all, which is why a note says so.
     target = layout_path(roots)
+    computed = {int(cast("int", row["session_id"])) for row in rows}
+    carried = carry_forward(target, computed=computed, columns=list(COLUMN_ORDER), stage=STAGE)
+    if carried:
+        caveat = (
+            f"{len(carried.rows)} kept row(s) were decided against the cohort of an "
+            f"earlier run; the recurring label is identified across whichever sessions "
+            f"are in a run, so only a full run settles it for the whole cohort"
+        )
+        logger.warning("%s: %s", STAGE, caveat)
+        report = report.with_notes([*carried.notes(STAGE), caveat])
+    frame = build_frame(
+        combine({int(cast("int", row["session_id"])): row for row in rows}, carried)
+    )
+    validate(frame, LAYOUT_SCHEMA, context=STAGE)
     write_csv(target, frame)
-    logger.info("wrote %s with %d row(s)", target, len(frame))
+    logger.info(
+        "wrote %s with %d row(s) (%d from this run, %d kept)",
+        target,
+        len(frame),
+        len(rows),
+        len(carried.rows),
+    )
 
     debug_path: Path | None = None
     ordered_diagnostics = sorted(

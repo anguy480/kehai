@@ -346,3 +346,76 @@ def test_the_summary_reports_the_headline_measures():
 
 def test_the_summary_of_nothing():
     assert stage.summarise(pd.DataFrame()) == ["no sessions were processed"]
+
+
+# ---------------------------------------------------------------------------
+# partial runs
+# ---------------------------------------------------------------------------
+def write_roles(roots: DataRoots, session_ids: list[int]) -> None:
+    """A hand-written role mapping, enough to let the stage run."""
+    pd.DataFrame(
+        [
+            {"session_id": session_id, "speaker": speaker, "role": role}
+            for session_id in session_ids
+            for speaker, role in (
+                ("SPEAKER_00", "psychiatrist"),
+                ("SPEAKER_01", "participant"),
+            )
+        ]
+    ).to_csv(roots.work / "roles.csv", index=False)
+
+
+@pytest.mark.slow
+def test_a_partial_rerun_keeps_the_rows_it_did_not_compute(
+    roots: DataRoots, raw_tree: Path, default_config: AppConfig
+):
+    """The same bug the face stage had: every per-session table shared it."""
+    place_fake_media(roots.data, WINTER_FOLDER, [28, 3])
+    for session_id in (28, 3):
+        write_speech(roots, session_id, clean_exchange_rows())
+    write_roles(roots, [28, 3])
+
+    first = stage.run(default_config, roots, workers=1)
+    assert sorted(first.frame["session_id"]) == [3, 28]
+
+    rerun = stage.run(default_config, roots, session_ids=[3], workers=1, force=True)
+
+    assert sorted(rerun.frame["session_id"]) == [3, 28]
+
+
+@pytest.mark.slow
+def test_a_skipped_session_keeps_a_populated_row(
+    roots: DataRoots, raw_tree: Path, default_config: AppConfig
+):
+    place_fake_media(roots.data, WINTER_FOLDER, [28])
+    write_speech(roots, 28, clean_exchange_rows())
+    write_roles(roots, [28])
+    stage.run(default_config, roots, workers=1)
+
+    again = stage.run(default_config, roots, workers=1)
+
+    assert len(again.report.skipped) == 1
+    row = again.frame.iloc[0]
+    assert pd.notna(row["turns__latency_median"])
+    assert pd.notna(row["turns__participant_speaking_ratio"])
+
+
+@pytest.mark.slow
+def test_a_session_whose_row_was_lost_is_recomputed(
+    roots: DataRoots, raw_tree: Path, default_config: AppConfig
+):
+    """Artifacts on disk are not enough to call a session done.
+
+    This is the state an earlier partial run left behind, and the only way out
+    of it is to recompute the row.
+    """
+    place_fake_media(roots.data, WINTER_FOLDER, [28])
+    write_speech(roots, 28, clean_exchange_rows())
+    write_roles(roots, [28])
+    stage.run(default_config, roots, workers=1)
+    (roots.out / stage.TURN_FEATURES_FILENAME).unlink()
+
+    again = stage.run(default_config, roots, workers=1)
+
+    assert len(again.report.succeeded) == 1
+    assert pd.notna(again.frame.iloc[0]["turns__latency_median"])

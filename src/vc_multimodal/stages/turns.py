@@ -40,6 +40,7 @@ from vc_multimodal.logging_setup import get_logger
 from vc_multimodal.paths import DataRoots, RawSession, discover_sessions, select_sessions
 from vc_multimodal.roles import RoleMapping, RolesUnavailableError, load_role_mapping, spans_by_role
 from vc_multimodal.runner import StageReport, run_sessions
+from vc_multimodal.session_tables import carry_forward, combine, has_row
 from vc_multimodal.stages.vad import speech_path
 
 logger = get_logger(__name__)
@@ -251,10 +252,20 @@ def run(
     durations = dict(_durations(roots))
     rows: dict[int, Mapping[str, object]] = {}
 
+    qc_target = roots.out_path(TURN_FEATURES_FILENAME)
+
     def is_done(session: RawSession) -> bool:
+        """Done means every output exists, including this session's QC row.
+
+        A session whose artifacts are on disk but whose row is not is not done:
+        skipping it would leave the table permanently short of a row, because
+        nothing else ever writes one. This is how a row lost to an earlier
+        partial run heals itself.
+        """
         return (
             turns_path(roots, session.session_id).exists()
             and timeline_path(roots, session.session_id).exists()
+            and has_row(qc_target, session.session_id)
         )
 
     def process_one(session: RawSession) -> str:
@@ -321,17 +332,33 @@ def run(
             session, by_role, mapping, duration_s=duration, config=config
         )
 
-    frame = build_frame(list(rows.values()))
+    # Rows for sessions this run did not compute are kept, whether they were
+    # left out by --sessions or skipped as already done. Writing only this
+    # run's rows would delete every other session's.
+    carried = carry_forward(
+        qc_target,
+        computed=set(rows),
+        columns=["session_id", "wave", *FEATURE_NAMES, *QC_COLUMNS],
+        stage=STAGE,
+        force=force,
+    )
+    frame = build_frame(combine(rows, carried))
     validate(
         frame,
         feature_schema([*FEATURE_NAMES, *QC_COLUMNS]),
         context=STAGE,
     )
-    target = roots.out_path(TURN_FEATURES_FILENAME)
-    write_csv(target, frame)
-    logger.info("wrote %s with %d row(s)", target, len(frame))
 
-    return TurnsResult(report=report, frame=frame, path=target)
+    write_csv(qc_target, frame)
+    logger.info(
+        "wrote %s with %d row(s) (%d from this run, %d kept)",
+        qc_target,
+        len(frame),
+        len(rows),
+        len(carried.rows),
+    )
+
+    return TurnsResult(report=report.with_notes(carried.notes(STAGE)), frame=frame, path=qc_target)
 
 
 def summarise(frame: pd.DataFrame) -> list[str]:

@@ -50,6 +50,7 @@ from vc_multimodal.logging_setup import get_logger
 from vc_multimodal.modeling.tiers import describe_plan, resolve_tiers
 from vc_multimodal.paths import DataRoots, RawSession, discover_sessions, select_sessions
 from vc_multimodal.runner import StageReport, run_sessions
+from vc_multimodal.session_tables import carry_forward, combine
 from vc_multimodal.stages import face as face_stage
 from vc_multimodal.stages import prosody as prosody_stage
 from vc_multimodal.stages import turns as turns_stage
@@ -410,7 +411,7 @@ def run(
         ContractError: if the table breaks its schema or the feature budget.
         FaceError: if the facial measures mix backends.
     """
-    del workers, force  # the join is cheap and always recomputed
+    del workers  # the join is cheap and always recomputed
 
     upstream = load_upstream(roots)
     for stage_name in upstream.missing:
@@ -444,11 +445,20 @@ def run(
 
     report = run_sessions(STAGE, selected, aggregate_one, workers=1, backend="threads", notes=notes)
 
-    frame = build_frame(list(rows.values()), columns)
+    # Rows for sessions outside this run are kept rather than deleted, so a
+    # subset rerun tops the table up instead of shrinking it to the subset.
+    target = features_path(roots)
+    carried = carry_forward(
+        target,
+        computed=set(rows),
+        columns=["session_id", "wave", *columns, *QC_COLUMNS],
+        stage=STAGE,
+        force=force,
+    )
+    frame = build_frame(combine(rows, carried), columns)
     validate(frame, feature_schema([*columns, *QC_COLUMNS]), context=STAGE)
     _check_budget(columns, config)
 
-    target = features_path(roots)
     write_csv(target, frame)
     logger.info("wrote %s with %d row(s) and %d feature(s)", target, len(frame), len(columns))
 

@@ -41,6 +41,7 @@ from vc_multimodal.paths import DataRoots, RawSession, discover_sessions, select
 from vc_multimodal.prosody import ProsodyBackend, ProsodyError, get_backend
 from vc_multimodal.roles import RoleMapping, load_role_mapping, spans_by_role
 from vc_multimodal.runner import StageReport, run_sessions
+from vc_multimodal.session_tables import carry_forward, combine, has_row
 from vc_multimodal.stages.extract_audio import audio_path
 from vc_multimodal.stages.vad import read_mono_wav, speech_path
 
@@ -309,8 +310,19 @@ def run(
     prosody_dir(roots)
     rows: dict[int, Mapping[str, object]] = {}
 
+    qc_target = roots.out_path(PROSODY_FEATURES_FILENAME)
+
     def is_done(session: RawSession) -> bool:
-        return prosody_path(roots, session.session_id).exists()
+        """Done means every output exists, including this session's QC row.
+
+        A session whose artifacts are on disk but whose row is not is not done:
+        skipping it would leave the table permanently short of a row, because
+        nothing else ever writes one. This is how a row lost to an earlier
+        partial run heals itself.
+        """
+        return prosody_path(roots, session.session_id).exists() and has_row(
+            qc_target, session.session_id
+        )
 
     def measure_one(session: RawSession) -> str:
         speech_file = speech_path(roots, session.session_id)
@@ -381,13 +393,31 @@ def run(
             outcome.session_id,
         )
 
-    frame = build_frame(list(rows.values()))
+    # Rows for sessions this run did not compute are kept, whether they were
+    # left out by --sessions or skipped as already done. Writing only this
+    # run's rows would delete every other session's.
+    carried = carry_forward(
+        qc_target,
+        computed=set(rows),
+        columns=["session_id", "wave", *FEATURE_NAMES, *QC_COLUMNS],
+        stage=STAGE,
+        force=force,
+    )
+    frame = build_frame(combine(rows, carried))
     validate(frame, feature_schema([*FEATURE_NAMES, *QC_COLUMNS]), context=STAGE)
-    target = roots.out_path(PROSODY_FEATURES_FILENAME)
-    write_csv(target, frame)
-    logger.info("wrote %s with %d row(s)", target, len(frame))
 
-    return ProsodyResult(report=report, frame=frame, path=target)
+    write_csv(qc_target, frame)
+    logger.info(
+        "wrote %s with %d row(s) (%d from this run, %d kept)",
+        qc_target,
+        len(frame),
+        len(rows),
+        len(carried.rows),
+    )
+
+    return ProsodyResult(
+        report=report.with_notes(carried.notes(STAGE)), frame=frame, path=qc_target
+    )
 
 
 def summarise(frame: pd.DataFrame) -> list[str]:

@@ -40,6 +40,7 @@ from vc_multimodal.io_utils import read_csv, write_csv, write_json, write_parque
 from vc_multimodal.logging_setup import get_logger
 from vc_multimodal.paths import DataRoots, RawSession, discover_sessions, select_sessions
 from vc_multimodal.runner import StageReport, run_sessions
+from vc_multimodal.session_tables import carry_forward, combine, has_row, rows_with_values
 
 logger = get_logger(__name__)
 
@@ -331,10 +332,20 @@ def run(
     face_dir(roots)
     records: dict[int, Mapping[str, object]] = {}
 
+    qc_target = roots.out_path(FACE_QC_FILENAME)
+
     def is_done(session: RawSession) -> bool:
+        """Done means every output exists, including the QC row.
+
+        A session whose per-frame table is on disk but whose QC row is not is
+        not done: skipping it would leave the table permanently short of a row,
+        because nothing else ever writes one. This is how a row lost to an
+        earlier partial run heals itself.
+        """
         return (
             face_path(roots, session.session_id).exists()
             and backend_sidecar_path(roots, session.session_id).is_file()
+            and has_row(qc_target, session.session_id)
         )
 
     def measure_one(session: RawSession) -> str:
@@ -383,22 +394,19 @@ def run(
         notes=notes,
     )
 
-    # A skipped session keeps its recorded QC row where one exists, and its
-    # backend is taken from the sidecar either way: that record sits beside the
-    # measurements themselves, so deleting the QC table cannot hide a session
-    # measured with the other backend.
-    previous = _previous_qc(roots)
-    for outcome in report.skipped:
-        recorded = read_backend_record(roots, outcome.session_id)
-        row = dict(previous.get(outcome.session_id, {}))
-        if recorded is not None:
-            row.setdefault("session_id", outcome.session_id)
-            row["backend"] = recorded["backend"]
-            row["backend_version"] = recorded.get("backend_version", "")
-        if row:
-            records[outcome.session_id] = row
-
-    frame = build_frame(list(records.values()))
+    # Rows for sessions this run did not measure are kept, whether they were
+    # left out by --sessions or skipped as already done. Building the table from
+    # this run alone would delete every other session's row.
+    #
+    # A skipped session therefore needs no special case: `is_done` guarantees it
+    # has a row, and that row is carried forward like any other. The stub this
+    # used to build - an identifier and a backend, every measurement empty - was
+    # indistinguishable from a failed measurement and made every rate computed
+    # over the table wrong.
+    carried = carry_forward(
+        qc_target, computed=set(records), columns=list(QC_COLUMN_ORDER), stage=STAGE, force=force
+    )
+    frame = build_frame(combine(records, carried))
     require_single_backend(
         [str(name) for name in frame["backend"].tolist()], context="the face QC table"
     )
@@ -409,11 +417,16 @@ def run(
         [record["backend"] for record in stored_backends(roots).values()],
         context="the stored facial measurements",
     )
-    target = roots.out_path(FACE_QC_FILENAME)
-    write_csv(target, frame)
-    logger.info("wrote %s with %d row(s)", target, len(frame))
+    write_csv(qc_target, frame)
+    logger.info(
+        "wrote %s with %d row(s) (%d measured here, %d kept)",
+        qc_target,
+        len(frame),
+        len(records),
+        len(carried.rows),
+    )
 
-    return FaceResult(report=report, frame=frame, path=target)
+    return FaceResult(report=report.with_notes(carried.notes(STAGE)), frame=frame, path=qc_target)
 
 
 def _boxes_agree(boxes: Sequence[CropBox]) -> bool:
@@ -500,22 +513,6 @@ def stored_backends(roots: DataRoots) -> dict[int, Mapping[str, str]]:
     return found
 
 
-def _previous_qc(roots: DataRoots) -> dict[int, Mapping[str, object]]:
-    """The previous QC rows, keyed by session, or empty."""
-    path = roots.out_path(FACE_QC_FILENAME, create_parent=False)
-    if not path.exists():
-        return {}
-    try:
-        frame = read_csv(path)
-    except (OSError, ValueError):  # pragma: no cover - defensive
-        return {}
-    if "session_id" not in frame.columns:
-        return {}
-    return {
-        int(row["session_id"]): {k: row[k] for k in frame.columns} for _, row in frame.iterrows()
-    }
-
-
 def summarise(frame: pd.DataFrame, config: AppConfig) -> list[str]:
     """Summarise facial measurement. Counts and rates only."""
     if frame.empty:
@@ -544,8 +541,16 @@ def summarise(frame: pd.DataFrame, config: AppConfig) -> list[str]:
         worst_id = frame.loc[frame["dropped_fraction"] == dropped.max(), "session_id"]
         lines.append(f"  worst session(s): {sorted(int(i) for i in worst_id)}")
 
-    letterboxed = int(frame["letterbox_detected"].fillna(False).sum())
-    lines.append(f"letterbox corrected in {letterboxed} of {len(frame)} session(s)")
+    # Counted over sessions that have a value, not over every row. A row
+    # carried from an older table, or one whose measurement failed, records
+    # nothing about letterboxing, and counting those as "not corrected" states
+    # something false about the cohort.
+    detected_values = rows_with_values(frame, "letterbox_detected")
+    letterboxed = int(detected_values.astype("boolean").fillna(False).sum())
+    measured = len(detected_values)
+    unknown = len(frame) - measured
+    suffix = f" ({unknown} session(s) not measured in this table)" if unknown else ""
+    lines.append(f"letterbox corrected in {letterboxed} of {measured} measured session(s){suffix}")
     lines.append(
         "  head pose is recorded as head pose. It is not gaze: these recordings "
         "have no eye tracker (docs/decisions/0013)."

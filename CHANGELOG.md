@@ -8,6 +8,27 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Every stage that writes a per-session table overwrote it instead of merging,
+  so a run over a subset deleted the rows for every session it did not touch.
+  Nothing failed while it happened: `vc --force --sessions 130 face` reported
+  success and left `face_qc.csv` holding one row where it had held three. With 62
+  sessions and individual reruns this destroyed coverage on every run. The rows a
+  run did not compute are now kept, in `face`, `vad`, `turns`, `prosody`,
+  `diarize`, `verify_layout`, `assign-speakers` and `aggregate`.
+  (`extract-audio` was already safe: it rebuilds its table from every sidecar on
+  disk.)
+- A session skipped as already done could get a row with every column empty,
+  assembled from its backend sidecar alone. Empty is indistinguishable from a
+  failed measurement, so it corrupted every rate computed over the table - the
+  face summary reported "letterbox corrected in 2 of 3 sessions" when the answer
+  was 2 of 2 measured. A skipped session's previous row is now carried forward,
+  and a session whose row is missing is no longer considered done, so it is
+  re-measured rather than stubbed. Rates in the summaries count only sessions
+  that have a value, and say how many do not.
+- `verify-layout` now records that rows kept from an earlier run were decided
+  against that run's cohort: the recurring label is identified across whichever
+  sessions are in a run, so only a full run settles it for the whole cohort.
+
 - Head pose from MediaPipe was returned in the order `(yaw, roll, pitch)` while
   labelled `(pitch, yaw, roll)`. Each angle was individually recoverable, so a
   test that round-tripped through the same convention passed; rotating an image

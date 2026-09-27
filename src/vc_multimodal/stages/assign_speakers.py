@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import numpy as np
 import pandas as pd
@@ -65,6 +65,7 @@ from vc_multimodal.logging_setup import get_logger
 from vc_multimodal.paths import DataRoots, RawSession, discover_sessions, select_sessions
 from vc_multimodal.roles import write_role_mapping
 from vc_multimodal.runner import StageReport, run_sessions
+from vc_multimodal.session_tables import ID_COLUMN, carry_forward, combine
 from vc_multimodal.stages import diarize as diarize_stage
 from vc_multimodal.stages import extract_audio as extract_audio_stage
 from vc_multimodal.stages import verify_layout as layout_stage
@@ -936,39 +937,79 @@ def _score_rows(assignment: SessionAssignment, clips: Sequence[str]) -> list[dic
     return rows
 
 
+#: Column order of the per-session table, named once so the merge and the
+#: builder cannot disagree about the shape.
+SPEAKER_COLUMN_ORDER: Final = (
+    "session_id",
+    "wave",
+    "n_speakers",
+    "assigned",
+    "psychiatrist_speaker",
+    "participant_speaker",
+    "mapped_clip",
+    "decisive_clips",
+    "psychiatrist_similarity",
+    "participant_similarity",
+    "best_clip",
+    "margin",
+    "clip_choices",
+    "clips_agree",
+    "psychiatrist_speech_s",
+    "participant_speech_s",
+    "ocr_side",
+    "side_source",
+    "ocr_agreement",
+    "mouth_agreement",
+    "mouth_tiles",
+    "mouth_best_correlation",
+    "mouth_reason",
+    "qc__flags",
+)
+
+
 def _build_frame(rows: Sequence[Mapping[str, object]]) -> pd.DataFrame:
     """Assemble a table with stable columns even when empty."""
-    columns = [
-        "session_id",
-        "wave",
-        "n_speakers",
-        "assigned",
-        "psychiatrist_speaker",
-        "participant_speaker",
-        "mapped_clip",
-        "decisive_clips",
-        "psychiatrist_similarity",
-        "participant_similarity",
-        "best_clip",
-        "margin",
-        "clip_choices",
-        "clips_agree",
-        "psychiatrist_speech_s",
-        "participant_speech_s",
-        "ocr_side",
-        "side_source",
-        "ocr_agreement",
-        "mouth_agreement",
-        "mouth_tiles",
-        "mouth_best_correlation",
-        "mouth_reason",
-        "qc__flags",
-    ]
+    columns = list(SPEAKER_COLUMN_ORDER)
     frame = pd.DataFrame(list(rows), columns=columns)
     if not frame.empty:
         frame["session_id"] = frame["session_id"].astype("int64")
         frame["n_speakers"] = frame["n_speakers"].astype("int64")
     return frame.sort_values("session_id", ignore_index=True)
+
+
+def _merge_scores(target: Path, fresh: pd.DataFrame, computed: set[int]) -> pd.DataFrame:
+    """The per-speaker evidence table, keeping rows for sessions not rerun.
+
+    Several rows per session here, so this cannot go through `combine`, which
+    is keyed by session. The rule is the same: drop the sessions recomputed,
+    keep the rest.
+    """
+    if not target.exists():
+        return fresh
+    try:
+        existing = read_csv(target)
+    except (OSError, ValueError):
+        logger.warning("%s: could not read %s; writing this run's rows only", STAGE, target.name)
+        return fresh
+    if ID_COLUMN not in existing.columns:
+        logger.warning(
+            "%s: %s has no %s column; writing this run's rows only",
+            STAGE,
+            target.name,
+            ID_COLUMN,
+        )
+        return fresh
+    numeric = pd.to_numeric(existing[ID_COLUMN], errors="coerce")
+    kept = existing.loc[numeric.notna() & ~numeric.isin(list(computed))]
+    if kept.empty:
+        return fresh
+    logger.info(
+        "%s: keeping %d existing evidence row(s) for session(s) not in this run",
+        STAGE,
+        len(kept),
+    )
+    merged = pd.concat([kept, fresh], ignore_index=True)
+    return merged.sort_values([ID_COLUMN, "speaker"], ignore_index=True)
 
 
 def run(
@@ -999,8 +1040,6 @@ def run(
     Raises:
         AssignError: if the reference clips or the map cannot be used.
     """
-    del force
-
     binaries = tools or FfmpegTools.discover()
     embedder = get_embedder(config, roots.work)
     if not embedder.available():
@@ -1052,16 +1091,25 @@ def run(
         for row in _score_rows(assignment, clips)
     ]
 
-    frame = _build_frame(rows)
-    scores = pd.DataFrame(score_rows)
+    # Rows for sessions outside this run are kept rather than deleted.
     target = speakers_path(roots)
-    write_csv(target, frame)
+    carried = carry_forward(
+        target,
+        computed=set(assignments),
+        columns=list(SPEAKER_COLUMN_ORDER),
+        stage=STAGE,
+        force=force,
+    )
+    fresh = {int(cast("int", row["session_id"])): row for row in rows}
+    frame = _build_frame(combine(fresh, carried))
     evidence_target = scores_path(roots)
+    scores = _merge_scores(evidence_target, pd.DataFrame(score_rows), set(assignments))
+    write_csv(target, frame)
     write_csv(evidence_target, scores)
     logger.info("%s: wrote %s and %s", STAGE, target.name, evidence_target.name)
 
     return AssignResult(
-        report=report,
+        report=report.with_notes(carried.notes(STAGE)),
         frame=frame,
         scores=scores,
         path=target,

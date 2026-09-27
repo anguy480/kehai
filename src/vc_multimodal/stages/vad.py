@@ -40,6 +40,7 @@ from vc_multimodal.io_utils import read_parquet, write_csv, write_parquet
 from vc_multimodal.logging_setup import get_logger
 from vc_multimodal.paths import DataRoots, RawSession, discover_sessions, select_sessions
 from vc_multimodal.runner import StageReport, run_sessions
+from vc_multimodal.session_tables import carry_forward, combine, has_row
 from vc_multimodal.stages.diarize import segments_path
 from vc_multimodal.stages.extract_audio import audio_path
 
@@ -321,8 +322,19 @@ def run(
     speech_dir(roots)
     records: dict[int, Mapping[str, object]] = {}
 
+    qc_target = roots.out_path(VAD_QC_FILENAME)
+
     def is_done(session: RawSession) -> bool:
-        return speech_path(roots, session.session_id).exists()
+        """Done means every output exists, including this session's QC row.
+
+        A session whose artifacts are on disk but whose row is not is not done:
+        skipping it would leave the table permanently short of a row, because
+        nothing else ever writes one. This is how a row lost to an earlier
+        partial run heals itself.
+        """
+        return speech_path(roots, session.session_id).exists() and has_row(
+            qc_target, session.session_id
+        )
 
     def refine_one(session: RawSession) -> str:
         segments_file = segments_path(roots, session.session_id)
@@ -389,12 +401,28 @@ def run(
             session, mode=mode, segments=by_speaker, speech=speech
         )
 
-    frame = build_frame(list(records.values()))
-    target = roots.out_path(VAD_QC_FILENAME)
-    write_csv(target, frame)
-    logger.info("wrote %s with %d row(s)", target, len(frame))
+    # Rows for sessions this run did not compute are kept, whether they were
+    # left out by --sessions or skipped as already done. Writing only this
+    # run's rows would delete every other session's.
+    carried = carry_forward(
+        qc_target,
+        computed=set(records),
+        columns=list(COLUMN_ORDER),
+        stage=STAGE,
+        force=force,
+    )
+    frame = build_frame(combine(records, carried))
 
-    return VadResult(report=report, frame=frame, path=target)
+    write_csv(qc_target, frame)
+    logger.info(
+        "wrote %s with %d row(s) (%d from this run, %d kept)",
+        qc_target,
+        len(frame),
+        len(records),
+        len(carried.rows),
+    )
+
+    return VadResult(report=report.with_notes(carried.notes(STAGE)), frame=frame, path=qc_target)
 
 
 def summarise(frame: pd.DataFrame) -> list[str]:
