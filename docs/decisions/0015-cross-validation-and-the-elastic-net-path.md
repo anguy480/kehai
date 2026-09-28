@@ -87,3 +87,46 @@ has 50 alphas rather than 100, both of which are ample over two decades.
   by construction.
 * Nothing here rescues a small sample. The point of the tiering, the pairing and
   the correction is to make a modest test honest, not to make it significant.
+
+## Amendment, 2026-09-29: the bound was not sufficient on the real matrix
+
+This ADR claimed the bounded path "converges everywhere tested". That claim was
+too general, and a run on the real feature table showed it: convergence warnings
+reappeared, 13 fits in the 54-feature exploratory set and 1 in the 74-feature
+one.
+
+The claim was tested on **synthetic** matrices of independent normal columns.
+The real feature matrix is correlated by construction - a mean and a standard
+deviation of the same action unit, a mean and a median of the same latency, two
+facial windows of the same session - and median imputation makes some columns
+nearer still. Coordinate descent on near-duplicate columns needs more iterations
+than on independent ones, whatever the penalty range.
+
+### What changed
+
+**The iteration cap is raised from 20,000 to 200,000.** Measured on the real
+matrix this converges everywhere, and it costs nothing: 52.7s against 51.9s for
+the same 62 leave-one-out fits, because the fits that needed the headroom were a
+small minority.
+
+Raising the cap is deliberately preferred over restricting the path further.
+Tightening `eps` from 1e-2 to 5e-2 also achieves convergence and is six times
+faster, but it is a *second* change to which models the search may consider,
+and the speed is not needed. Raising the cap changes nothing about the analysis;
+it only lets the optimiser finish the work it was already asked to do. If the
+cost ever becomes a problem, `eps` is where to look, and it should be a recorded
+decision rather than a performance tweak.
+
+### The durable part
+
+A cap is a guess about a future table, so non-convergence is now **counted and
+reported** rather than warned about once. Each estimate carries
+`n_fits_not_converged` into `model_results.csv`, so a reader can see whether a
+number rests on fits the optimiser had not finished. The count exists because
+the previous behaviour - a wall of repeated sklearn text during a run that takes
+tens of minutes - is trivially scrolled past, and because any cap chosen today
+may be too small for a table with more features or more collinearity.
+
+A non-zero count is not automatically fatal. It says that part of that estimate
+rests on coefficients the optimiser was still moving, which is a reason to
+discount that estimate specifically, not the run.

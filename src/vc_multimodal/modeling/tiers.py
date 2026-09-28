@@ -34,7 +34,6 @@ class TierPlan:
             a change to the pre-registered analysis and has to be visible.
         awaiting: Families whose primary features have not been fixed yet.
         n_primary_tests: How many confirmatory tests will be reported.
-        n_estimates: How many cross-validated estimates the full run produces.
     """
 
     primary: tuple[str, ...]
@@ -42,7 +41,6 @@ class TierPlan:
     missing: tuple[str, ...]
     awaiting: tuple[str, ...]
     n_primary_tests: int
-    n_estimates: int
 
     @property
     def is_complete(self) -> bool:
@@ -50,9 +48,22 @@ class TierPlan:
         return not self.missing and not self.awaiting
 
     @property
-    def n_exploratory_estimates(self) -> int:
-        """Estimates reported as exploratory rather than confirmatory."""
-        return max(0, self.n_estimates - self.n_primary_tests)
+    def n_features(self) -> int:
+        """Every feature column the plan covers, both tiers."""
+        return len(self.primary) + len(self.exploratory)
+
+    def counted_by_source(self) -> dict[str, int]:
+        """Features by where they came from, for an honest denominator.
+
+        The text baseline is counted separately because it is not measured by
+        this pipeline, and a reader comparing "62 exploratory features" against
+        a 54-feature extraction has no way to reconcile the two otherwise.
+        """
+        counts = {"measured here": 0, "text baseline": 0}
+        for name in (*self.primary, *self.exploratory):
+            key = "text baseline" if name.startswith("text__") else "measured here"
+            counts[key] += 1
+        return counts
 
 
 def resolve_tiers(columns: Sequence[str], config: ModelConfig) -> TierPlan:
@@ -72,9 +83,14 @@ def resolve_tiers(columns: Sequence[str], config: ModelConfig) -> TierPlan:
     missing = tuple(name for name in configured if name not in features)
     exploratory = tuple(name for name in features if name not in set(primary))
 
-    n_targets = len(config.targets)
-    n_primary_tests = len(config.tiers.primary_comparisons) * n_targets
-    n_estimates = len(config.feature_sets) * n_targets * len(config.models)
+    # The estimate count is deliberately not derived here. It used to be
+    # len(feature_sets) x targets x models, which assumed one estimate per
+    # feature set - false once a set named in a comparison is evaluated both
+    # confirmatory and exploratory - and the "exploratory estimates" figure
+    # subtracted a count of *tests* from a count of *estimates*, which are
+    # different units. The stage that does the work supplies the real numbers
+    # as `EstimateCounts`.
+    n_primary_tests = len(config.tiers.primary_comparisons) * len(config.targets)
 
     return TierPlan(
         primary=primary,
@@ -82,7 +98,6 @@ def resolve_tiers(columns: Sequence[str], config: ModelConfig) -> TierPlan:
         missing=missing,
         awaiting=config.tiers.families_awaiting_primaries,
         n_primary_tests=n_primary_tests,
-        n_estimates=n_estimates,
     )
 
 
@@ -122,36 +137,66 @@ def holm_adjust(p_values: Sequence[float]) -> tuple[float, ...]:
     return tuple(adjusted)
 
 
-def describe_plan(plan: TierPlan, config: ModelConfig) -> list[str]:
-    """Render the plan for the analysis report.
+@dataclass(frozen=True, slots=True)
+class EstimateCounts:
+    """How many cross-validated estimates a run will actually produce.
 
-    States the number of confirmatory tests and the number of exploratory
-    estimates explicitly, because the count is what makes the distinction
-    meaningful to a reader.
+    Supplied by the stage that builds them rather than derived from a formula
+    here: a formula drifts from the code the moment the code changes, which is
+    exactly what happened.
     """
+
+    confirmatory: int
+    exploratory: int
+
+    @property
+    def total(self) -> int:
+        """Every estimate."""
+        return self.confirmatory + self.exploratory
+
+
+def describe_plan(
+    plan: TierPlan, config: ModelConfig, counts: EstimateCounts | None = None
+) -> list[str]:
+    """Explain the tier split, for a log or a stage summary.
+
+    Args:
+        plan: The resolved plan.
+        config: The model configuration.
+        counts: The estimates the run will produce, where the caller knows
+            them. Omitted rather than guessed at: a wrong count is worse than
+            no count, because it reads as information.
+    """
+    by_source = plan.counted_by_source()
     lines = [
         "analysis tiers (docs/decisions/0012)",
         f"  confirmatory: {len(plan.primary)} feature(s), "
-        f"{plan.n_primary_tests} test(s), "
-        f"{config.tiers.multiplicity_correction} correction across them",
+        f"{plan.n_primary_tests} test(s), {config.tiers.multiplicity_correction} "
+        f"correction across them",
     ]
     for comparison in config.tiers.primary_comparisons:
         lines.append(f"    {comparison.name}: {comparison.against[0]} vs {comparison.against[1]}")
+
+    composition = ", ".join(f"{count} {source}" for source, count in by_source.items() if count)
     lines.append(
-        f"  exploratory: {len(plan.exploratory)} further feature(s), "
-        f"{plan.n_exploratory_estimates} further estimate(s), reported without "
-        f"confirmatory claims"
+        f"  exploratory: {len(plan.exploratory)} of {plan.n_features} feature(s) "
+        f"in the table ({composition}), reported without confirmatory claims"
     )
-    if plan.awaiting:
+    if counts is not None:
         lines.append(
-            f"  NOT YET FIXED: primary features for {list(plan.awaiting)}. Those "
-            f"families contribute to the exploratory tier only until they are named."
+            f"  estimates: {counts.total} ({counts.confirmatory} confirmatory, "
+            f"{counts.exploratory} exploratory)"
         )
     if plan.missing:
         lines.append(
             f"  MISSING: {list(plan.missing)} named as primary but absent from the "
             f"feature table. A pre-registered feature that vanished is a change to "
             f"the analysis, not a detail."
+        )
+    if plan.awaiting:
+        lines.append(
+            f"  NOT YET FIXED: primary features for {list(plan.awaiting)}. Those "
+            f"families contribute to the exploratory tier only until they are named."
         )
     return lines
 

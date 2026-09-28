@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from vc_multimodal.config import DEFAULT_CONFIG_PATH, AppConfig, load_config
+from vc_multimodal.modeling.tiers import EstimateCounts, TierPlan, describe_plan, resolve_tiers
 from vc_multimodal.paths import DataRoots
 from vc_multimodal.stages import model as stage
 
@@ -650,3 +651,62 @@ class TestTheRunHonoursTheTiers:
         self, tiered_run: stage.ModelResult
     ) -> None:
         assert not any("confirmatory tier" in note for note in tiered_run.notes)
+
+
+# ---------------------------------------------------------------------------
+# what the tier message counts
+#
+# It reported "62 further feature(s)" against a 54-feature table, because the
+# plan covers the joined table (54 ours + 20 text) while nothing in the message
+# said so. The estimate figure was worse: len(feature_sets) x targets x models
+# minus a count of *tests*, which is both stale and a category error.
+# ---------------------------------------------------------------------------
+class TestTheTierMessageCounts:
+    def joined_plan(self) -> tuple[TierPlan, AppConfig]:
+        config = load_config(DEFAULT_CONFIG_PATH)
+        return resolve_tiers([str(c) for c in full_table().columns], config.model), config
+
+    def test_the_exploratory_count_states_its_denominator(self) -> None:
+        plan, config = self.joined_plan()
+        text = "\n".join(describe_plan(plan, config.model))
+        assert f"of {plan.n_features} feature(s) in the table" in text
+
+    def test_the_text_baseline_is_counted_separately(self) -> None:
+        # So a reader comparing against a 54-feature extraction can reconcile.
+        plan, config = self.joined_plan()
+        text = "\n".join(describe_plan(plan, config.model))
+        assert "text baseline" in text
+        assert "measured here" in text
+
+    def test_the_sources_add_up_to_the_total(self) -> None:
+        plan, _ = self.joined_plan()
+        assert sum(plan.counted_by_source().values()) == plan.n_features
+
+    def test_no_estimate_count_is_printed_when_it_is_not_known(self) -> None:
+        # A wrong count reads as information; an absent one does not.
+        plan, config = self.joined_plan()
+        assert not any("estimates:" in line for line in describe_plan(plan, config.model))
+
+    def test_the_supplied_estimate_count_is_printed(self) -> None:
+        plan, config = self.joined_plan()
+        counts = EstimateCounts(confirmatory=12, exploratory=28)
+        text = "\n".join(describe_plan(plan, config.model, counts))
+        assert "estimates: 40 (12 confirmatory, 28 exploratory)" in text
+
+
+@pytest.mark.slow
+class TestTheRunReportsItsOwnCounts:
+    def test_the_estimate_count_matches_the_estimates_produced(
+        self, tiered_run: stage.ModelResult
+    ) -> None:
+        """The property the old formula could not hold: agreement with reality."""
+        confirmatory = sum(1 for e in tiered_run.estimates if e.tier == "confirmatory")
+        exploratory = sum(1 for e in tiered_run.estimates if e.tier == "exploratory")
+        assert confirmatory + exploratory == len(tiered_run.estimates)
+        # And the results file has exactly that many rows.
+        assert len(pd.read_csv(tiered_run.results_path)) == len(tiered_run.estimates)
+
+    def test_the_results_file_records_non_convergence(self, tiered_run: stage.ModelResult) -> None:
+        frame = pd.read_csv(tiered_run.results_path)
+        assert "n_fits_not_converged" in frame.columns
+        assert frame["n_fits_not_converged"].notna().all()

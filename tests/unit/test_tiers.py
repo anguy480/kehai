@@ -16,6 +16,7 @@ from vc_multimodal.config import AppConfig, ConfigError, load_config
 from vc_multimodal.features.prosody_math import FEATURE_NAMES as PROSODY_FEATURES
 from vc_multimodal.features.turn_math import FEATURE_NAMES as TURN_FEATURES
 from vc_multimodal.modeling.tiers import (
+    EstimateCounts,
     describe_plan,
     holm_adjust,
     primary_feature_report,
@@ -48,13 +49,35 @@ def test_the_confirmatory_set_is_small_relative_to_the_sample(
     assert len(default_config.model.tiers.primary_columns) == 12
 
 
-def test_the_confirmatory_tests_are_far_fewer_than_the_estimates(
+def test_the_confirmatory_tests_are_counted_from_the_comparisons(
     default_config: AppConfig,
 ):
+    """Two comparisons on two targets: four corrected tests."""
     plan = resolve_tiers(BUILT_COLUMNS, default_config.model)
     assert plan.n_primary_tests == 4
-    assert plan.n_estimates == 32
-    assert plan.n_exploratory_estimates == 28
+
+
+def test_the_plan_does_not_guess_how_many_estimates_a_run_makes(
+    default_config: AppConfig,
+):
+    """It used to, as feature sets x targets x models, and that went stale.
+
+    A set named in a pre-registered comparison is evaluated twice, so the
+    formula undercounted; and the "exploratory estimates" figure subtracted a
+    count of tests from a count of estimates. The stage that builds them
+    supplies the real numbers now.
+    """
+    plan = resolve_tiers(BUILT_COLUMNS, default_config.model)
+    assert not hasattr(plan, "n_estimates")
+    assert not hasattr(plan, "n_exploratory_estimates")
+
+
+def test_the_estimate_counts_come_from_whoever_knows_them(default_config: AppConfig):
+    plan = resolve_tiers(BUILT_COLUMNS, default_config.model)
+    counts = EstimateCounts(confirmatory=12, exploratory=28)
+    assert counts.total == 40
+    text = "\n".join(describe_plan(plan, default_config.model, counts))
+    assert "estimates: 40 (12 confirmatory, 28 exploratory)" in text
 
 
 def test_every_family_now_has_its_primaries_fixed(default_config: AppConfig):
@@ -136,12 +159,19 @@ def test_an_empty_table_leaves_every_primary_missing(default_config: AppConfig):
     assert plan.primary == ()
 
 
-def test_the_report_states_both_counts(default_config: AppConfig):
+def test_the_report_states_the_feature_counts_with_their_denominator(
+    default_config: AppConfig,
+):
+    """It reported "62 further feature(s)" against a 54-feature extraction.
+
+    The number was right - the plan covers the joined table - but nothing said
+    what it was 62 of, so it read as a miscount.
+    """
     plan = resolve_tiers(BUILT_COLUMNS, default_config.model)
     text = "\n".join(describe_plan(plan, default_config.model))
 
     assert "4 test(s)" in text
-    assert "28 further estimate(s)" in text
+    assert f"of {plan.n_features} feature(s) in the table" in text
     assert "holm correction" in text
     assert "without confirmatory claims" in text
 

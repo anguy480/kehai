@@ -8,6 +8,24 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Elastic net convergence warnings reappeared on the real feature table despite
+  the bounded penalty path: 13 non-converged fits in the 54-feature exploratory
+  set and 1 in the 74-feature one. ADR 0015's claim that the bound converged
+  "everywhere tested" was tested on synthetic matrices of independent columns;
+  the real matrix is correlated by construction. The iteration cap is raised from
+  20,000 to 200,000, which converges everywhere measured at no cost in time, and
+  non-convergence is now counted per estimate and written to `model_results.csv`
+  as `n_fits_not_converged`, because any cap is a guess about a future table.
+- The tier summary reported "62 further feature(s)" against a 54-feature
+  extraction. The count was right - the plan covers the joined table, 54 measured
+  here plus 20 from the text baseline - but nothing in the message said so. It now
+  states the total and where the features came from. The estimate figure in the
+  same message was worse: derived as feature sets x targets x models minus a count
+  of *tests*, which is both stale (a named set now yields two variants) and a
+  category error. The stage that builds the estimates now supplies the real
+  counts, and the message omits them rather than guessing when a caller does not
+  know.
+
 - The confirmatory tier was unreachable, so the pre-registered analysis was not
   the one being run. A feature set counted as confirmatory only if all its
   columns were among the twelve pre-registered features, which no set can be: the

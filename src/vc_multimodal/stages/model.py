@@ -50,7 +50,13 @@ from vc_multimodal.modeling.text_features import (
     load_configured,
 )
 from vc_multimodal.modeling.text_features import join as join_text
-from vc_multimodal.modeling.tiers import TierPlan, describe_plan, holm_adjust, resolve_tiers
+from vc_multimodal.modeling.tiers import (
+    EstimateCounts,
+    TierPlan,
+    describe_plan,
+    holm_adjust,
+    resolve_tiers,
+)
 from vc_multimodal.paths import DataRoots
 
 logger = get_logger(__name__)
@@ -333,6 +339,7 @@ class Estimate:
                 else None
             ),
             "schemes_disagree_on_sign": self.evaluation.disagrees_with_stability,
+            "n_fits_not_converged": self.evaluation.n_not_converged,
         }
         if self.permutation is not None:
             row.update(
@@ -524,8 +531,6 @@ def run(
         logger.info("%s: %s", STAGE, line)
 
     plan = resolve_tiers([str(c) for c in cohort.features.columns], config.model)
-    for line in describe_plan(plan, config.model):
-        logger.info("%s: %s", STAGE, line)
     if plan.missing:
         notes.append(
             f"confirmatory feature(s) {list(plan.missing)} are named in the configuration "
@@ -575,8 +580,6 @@ def _evaluate_everything(
     notes: list[str],
 ) -> tuple[list[Estimate], list[ConfirmatoryTest]]:
     """Every estimate, then the pre-registered comparisons over the same folds."""
-    del plan  # the tier comes from the variants, which read the config directly
-
     # A set named in a pre-registered comparison is evaluated twice, on its
     # pre-registered columns and on all of them, so the work is counted in
     # variants rather than in feature sets.
@@ -607,6 +610,13 @@ def _evaluate_everything(
         len(targets),
         len(config.model.models),
     )
+    counts = EstimateCounts(
+        confirmatory=n_confirmatory * len(targets) * len(config.model.models),
+        exploratory=(n_variants - n_confirmatory) * len(targets) * len(config.model.models),
+    )
+    for line in describe_plan(plan, config.model, counts):
+        logger.info("%s: %s", STAGE, line)
+
     if n_confirmatory == 0:
         notes.append(
             "no feature set is evaluated in the confirmatory tier, so the "

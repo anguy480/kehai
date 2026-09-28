@@ -22,6 +22,7 @@ Three properties are enforced here rather than left to the caller:
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Final
@@ -29,6 +30,7 @@ from typing import Final
 import numpy as np
 from scipy import stats
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import ElasticNetCV
 from sklearn.pipeline import Pipeline
@@ -41,10 +43,18 @@ MODEL_RANDOM_FOREST: Final = "random_forest"
 #: lasso so the search is honest about both ends.
 _L1_RATIOS: Final = (0.1, 0.5, 0.9, 1.0)
 _INNER_FOLDS: Final = 5
-_MAX_ITER: Final = 20_000
+_MAX_ITER: Final = 200_000
 _N_TREES: Final = 500
 
 #: How many alphas to try, and how far below the strongest penalty to go.
+#:
+#: The iteration cap is deliberately generous. Bounding the path removed most
+#: non-convergence but not all of it on the real feature matrix, whose columns
+#: are correlated by construction - a mean and a standard deviation of the same
+#: action unit, a mean and a median of the same latency - in a way the synthetic
+#: matrices the bound was tested on were not. Raising the cap from 20k to 200k
+#: converges everywhere measured at no cost in time, because the fits that
+#: needed it were a small minority.
 #:
 #: `_ALPHA_EPS` is the ratio of the weakest penalty tried to the strongest.
 #: sklearn's default of 1e-3 explores penalties a thousand times weaker than
@@ -145,20 +155,34 @@ def _predict_out_of_fold(
     *,
     model: str,
     seed: int,
-) -> np.ndarray:
+) -> tuple[np.ndarray, int]:
     """Predict every row from a model that never saw it.
 
     Rows in no fold keep NaN, which is visible rather than silently scored.
+
+    Returns:
+        The predictions, and how many fits failed to converge. A fit that hits
+        its iteration cap returns whatever coefficients the optimiser happened
+        to be holding, so an estimate built from one is partly arbitrary. The
+        count is carried rather than warned about once, because a wall of
+        repeated sklearn text is easy to scroll past and a number per estimate
+        is not.
     """
     predictions = np.full(target.shape, np.nan, dtype=np.float64)
+    not_converged = 0
     for mask in masks:
         train = ~mask
         if train.sum() < _MIN_PAIR or mask.sum() == 0:
             continue
         pipeline = build_pipeline(model, seed)
-        pipeline.fit(features[train], target[train])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ConvergenceWarning)
+            pipeline.fit(features[train], target[train])
+            not_converged += sum(
+                1 for entry in caught if issubclass(entry.category, ConvergenceWarning)
+            )
         predictions[mask] = pipeline.predict(features[mask])
-    return predictions
+    return predictions, not_converged
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +253,9 @@ class Evaluation:
         errors: Per-session absolute error under leave-one-out, for the paired
             comparisons. Aligned with the rows given.
         n_features: How many features went in.
+        n_not_converged: Leave-one-out fits that hit the iteration cap. Any
+            number above zero means part of this estimate rests on coefficients
+            the optimiser had not finished computing.
     """
 
     loo: Scores
@@ -236,6 +263,7 @@ class Evaluation:
     stability_sd: float | None
     errors: np.ndarray
     n_features: int
+    n_not_converged: int = 0
 
     @property
     def disagrees_with_stability(self) -> bool:
@@ -272,7 +300,7 @@ def evaluate(
         )
         raise EvaluationError(msg)
 
-    loo_predictions = _predict_out_of_fold(
+    loo_predictions, not_converged = _predict_out_of_fold(
         features, target, leave_one_group_out(groups), model=model, seed=seed
     )
     loo = score_predictions(target, loo_predictions)
@@ -283,7 +311,7 @@ def evaluate(
         per_repeat: list[float] = []
         for repeat in range(stability_repeats):
             masks = group_folds(groups, stability_folds, seed + repeat)
-            predicted = _predict_out_of_fold(features, target, masks, model=model, seed=seed)
+            predicted, _ = _predict_out_of_fold(features, target, masks, model=model, seed=seed)
             try:
                 per_repeat.append(score_predictions(target, predicted).r2)
             except EvaluationError:  # pragma: no cover - defensive
@@ -298,6 +326,7 @@ def evaluate(
         stability_sd=stability_sd,
         errors=np.abs(target - loo_predictions),
         n_features=int(features.shape[1]),
+        n_not_converged=not_converged,
     )
 
 
@@ -406,14 +435,14 @@ def permutation_baseline(
 
     masks = group_folds(groups, folds, seed)
     observed = score_predictions(
-        target, _predict_out_of_fold(features, target, masks, model=model, seed=seed)
+        target, _predict_out_of_fold(features, target, masks, model=model, seed=seed)[0]
     ).r2
 
     rng = np.random.default_rng(seed)
     null: list[float] = []
     for _ in range(n_permutations):
         shuffled = rng.permutation(target)
-        predicted = _predict_out_of_fold(features, shuffled, masks, model=model, seed=seed)
+        predicted, _ = _predict_out_of_fold(features, shuffled, masks, model=model, seed=seed)
         try:
             null.append(score_predictions(shuffled, predicted).r2)
         except EvaluationError:  # pragma: no cover - defensive

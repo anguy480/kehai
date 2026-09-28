@@ -185,36 +185,46 @@ legitimate now rather than post hoc, and it is precisely the window this ADR
 exists to protect. It closes the first time the analysis is run against real
 outcomes.
 
-### Who chose this, and what is still open
+### Who chose this
 
-**This choice was made by the assistant implementing the fix, not by the
-project's owner.** It is recorded that way because this ADR requires a change to
-the confirmatory tier to be visible and attributed, and an unattributed change is
-exactly what it is written to prevent. Three options were drafted and one was
-taken; the record should not imply that anyone else weighed them.
+The structure below was implemented by the assistant and **the reasoning is the
+project owner's, confirmed on 2026-09-29**, after the assistant had put three
+options and a recommendation. It is recorded here because this ADR requires a
+change to the confirmatory tier to be visible and attributed.
 
-The reasoning for the option taken:
+The owner's reasoning, in their terms:
 
-* The bug had to be fixed either way. Leaving the tier unreachable meant the
-  headline tests were the exploratory analysis under a confirmatory label, which
-  is worse than any of the alternatives.
-* Restricting our own families to their pre-registered features is what this ADR
-  already says the confirmatory tier is, so that part restores the stated design
-  rather than choosing a new one.
-* The text baseline entering whole is the genuinely new judgement. The
-  alternative - pre-registering a subset of the manuscript's text features -
-  would mean selecting the baseline we are measured against, on no prior basis,
-  which is a larger liberty than the asymmetry it would remove.
-* A third option, accepting full feature sets as confirmatory and amending this
-  ADR to match, was rejected because 54 features on 62 sessions is the regime
-  this ADR exists to avoid.
+> The text features are another group's published set, and choosing a subset of
+> them on our own judgement would mean deciding what the baseline gets to be. A
+> baseline should be the strongest version of what it stands for. The asymmetry -
+> our families restricted, theirs whole - runs against us, which is the safe
+> direction.
 
-**This remains open for the project owner to overrule.** No questionnaire score
-has been seen by anyone on the extraction side, so the choice can still be
-changed without becoming post hoc - and that is the only reason it was safe to
-implement before being reviewed. The window closes the first time the analysis
-runs against real outcomes, and if the decision is to be revisited it should be
-revisited before then.
+That last point is the load-bearing one and it is worth stating plainly: the
+asymmetry makes our own side of every confirmatory comparison *smaller* than the
+baseline it is measured against. An asymmetry that favoured us would need
+defending; one that handicaps us does not.
+
+Two alternatives were offered and rejected.
+
+* **Pre-register a subset of the text features too**, so both sides are
+  restricted symmetrically. Rejected because it removes the asymmetry by taking
+  the larger liberty: selecting, on no prior basis, which parts of another
+  group's published feature set the baseline is allowed to use. That is choosing
+  how strong the thing we are measured against gets to be.
+* **Accept full feature sets as confirmatory** and amend this ADR to say the
+  confirmatory tests compare complete modality sets. Rejected because 54
+  features on 62 sessions is precisely the regime this ADR exists to avoid, and
+  because it would abandon the pre-registered twelve rather than test them.
+
+Fixing the unreachable tier itself was not a choice - while it stood, the
+headline tests were the exploratory analysis under a confirmatory label and the
+permutation nulls never ran. What needed deciding was only how a confirmatory
+comparison defines its feature sets.
+
+No questionnaire score had been seen by anyone on the extraction side when this
+was decided, which is what keeps it a pre-registration decision rather than a
+post-hoc one.
 
 ### What a confirmatory comparison uses
 

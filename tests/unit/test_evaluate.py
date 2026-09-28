@@ -14,6 +14,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
 
 from vc_multimodal.modeling.evaluate import (
+    _MAX_ITER,
     MODEL_ELASTIC_NET,
     MODEL_RANDOM_FOREST,
     EvaluationError,
@@ -356,3 +357,48 @@ class TestPermutationBaseline:
             )
             is None
         )
+
+
+@pytest.mark.slow
+class TestConvergenceIsCountedNotIgnored:
+    """A fit that hits its iteration cap returns whatever it was holding.
+
+    Bounding the alpha path removed most non-convergence but not all of it on
+    the real feature matrix, whose columns are correlated by construction. The
+    count is what makes any remaining case visible per estimate rather than a
+    wall of sklearn text to scroll past.
+    """
+
+    def correlated_data(self, n: int = 40, p: int = 36):
+        """Features correlated the way the real ones are.
+
+        A mean and a standard deviation of the same measure, a mean and a
+        median of the same latency: near-duplicate columns, which is what makes
+        coordinate descent struggle.
+        """
+        rng = np.random.default_rng(SEED)
+        base = rng.normal(size=(n, p // 3))
+        features = np.hstack([base, base + rng.normal(0, 0.01, base.shape), base * 1.001])
+        return features, rng.normal(size=n), [f"s{i}" for i in range(n)]
+
+    def test_a_converged_run_reports_zero(self) -> None:
+        features, target, groups = linear_data(n=30)
+        result = evaluate(features, target, groups, model=MODEL_ELASTIC_NET, seed=SEED)
+        assert result.n_not_converged == 0
+
+    def test_the_count_is_carried_on_the_evaluation(self) -> None:
+        features, target, groups = self.correlated_data()
+        result = evaluate(features, target, groups, model=MODEL_ELASTIC_NET, seed=SEED)
+        # Whatever the number, it must be a number rather than a surprise.
+        assert isinstance(result.n_not_converged, int)
+        assert result.n_not_converged >= 0
+
+    def test_the_iteration_cap_is_generous_enough_to_matter(self) -> None:
+        # The cap was raised from 20k to 200k because bounding the path alone
+        # left non-converged fits on the real matrix.
+        assert _MAX_ITER >= 200_000
+
+    def test_a_forest_never_reports_non_convergence(self) -> None:
+        features, target, groups = linear_data(n=30)
+        result = evaluate(features, target, groups, model=MODEL_RANDOM_FOREST, seed=SEED)
+        assert result.n_not_converged == 0
