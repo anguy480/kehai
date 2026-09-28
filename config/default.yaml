@@ -524,6 +524,25 @@ model:
       # this is not the file the rule was confirmed for, and the stage stops.
       expected_rows: 62
 
+    # Columns exempted from the check that refuses questionnaire-derived
+    # columns, each with the confirmation that earned the exemption.
+    #
+    # That check is deliberately broad and flags names describing affective
+    # constructs, because `anxiety` is exactly what a leaked K6 subscale would be
+    # called. Whether such a column is an outcome or a predictor is not something
+    # code can determine, so an exemption exists only where someone who knows how
+    # the column was produced has said so, in their own words, attributed and
+    # dated. Each statement is copied into the run manifest and the handoff
+    # README: "we checked" is not evidence a reviewer can weigh.
+    confirmed_predictors:
+      - columns: ["Agenda_anxiety", "Agenda_depression"]
+        statement: >-
+          Agenda_anxiety and Agenda_depression in nlp_features.csv are LLM-rated
+          topic scores derived from participant transcripts only, not from the K6
+          or SRS-2 questionnaires.
+        confirmed_by: "Prof. Tanaka"
+        confirmed_on: "2026-09-28"
+
   # The confirmatory/exploratory split. See docs/decisions/0012.
   #
   # The feature sets above, crossed with two targets and two model families,

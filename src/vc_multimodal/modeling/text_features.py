@@ -44,6 +44,22 @@ logger = get_logger(__name__)
 #: Identifier columns accepted for the join, in order of preference.
 ID_COLUMNS: Final = ("session_id", "session", "id", "recording_id", "file_id")
 
+#: Affective construct names. A column called `anxiety` or `depression` is
+#: exactly what a questionnaire subscale would be called, and no pattern can tell
+#: that apart from a legitimate topic rating. They are flagged here and exempted
+#: only by a recorded confirmation from someone who knows how the column was
+#: produced - see `ConfirmedPredictor` in the configuration.
+#:
+#: This used to be a hardcoded allowlist beside patterns that never matched these
+#: names at all, so the exemption read as deliberate while never firing. Had a
+#: pattern like these been added later, those columns would have been exempted
+#: silently, with nobody re-confirming anything.
+CONSTRUCT_PATTERNS: Final = (
+    r"anxiet",
+    r"depress",
+    r"distress",
+)
+
 #: Column names suggesting an outcome rather than a predictor. Matched against
 #: the tokenised name (see `_tokenise`), so `total_score` and `PHQ9` are caught
 #: as readily as `total score` and `phq 9`. Deliberately broad: a false positive
@@ -62,12 +78,8 @@ LABEL_PATTERNS: Final = (
     r"\bphq\b",
     r"\bgad\b",
     r"subscale",
+    *CONSTRUCT_PATTERNS,
 )
-
-#: Names matching a label pattern that are known predictors in this project's
-#: source material, and so are allowed. The manuscript's LLM-rated agenda
-#: scores are topic ratings of what was discussed, not questionnaire values.
-LABEL_ALLOWLIST: Final = ("agenda_anxiety", "agenda_depression")
 
 TEXT_FAMILY: Final = "text"
 
@@ -79,6 +91,30 @@ class TextFeatureError(ValueError):
 # ---------------------------------------------------------------------------
 # Matching rows to sessions by position
 # ---------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class Confirmation:
+    """A statement that particular columns are predictors, not outcomes.
+
+    Carried as a value rather than a loose mapping because both the manifest
+    and the handoff README render it, and neither should have to guess at the
+    shape of a dict.
+    """
+
+    columns: tuple[str, ...]
+    statement: str
+    confirmed_by: str
+    confirmed_on: str
+
+    def record(self) -> dict[str, object]:
+        """As written to the manifest."""
+        return {
+            "columns": list(self.columns),
+            "statement": self.statement,
+            "confirmed_by": self.confirmed_by,
+            "confirmed_on": self.confirmed_on,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class PositionalPlan:
     """A resolved ordering rule: which session each row belongs to.
@@ -204,13 +240,34 @@ def _tokenise(name: str) -> str:
     return text.strip()
 
 
-def label_like_columns(columns: Sequence[str]) -> tuple[str, ...]:
-    """Columns whose names suggest an outcome rather than a predictor."""
-    allowed = {_tokenise(name) for name in LABEL_ALLOWLIST}
+def _is_exempt(token: str, exempt: Sequence[str]) -> bool:
+    """Whether a column has a recorded confirmation behind it.
+
+    Matched on the tokenised name, and on a suffix, so one confirmation about
+    `Agenda_anxiety` also covers `text__agenda_anxiety` after the column is
+    renamed into this project's convention. Otherwise the exemption would hold
+    while loading the file and lapse the moment the table was joined.
+    """
+    for name in exempt:
+        allowed = _tokenise(name)
+        if token == allowed or token.endswith(f" {allowed}"):
+            return True
+    return False
+
+
+def label_like_columns(columns: Sequence[str], *, exempt: Sequence[str] = ()) -> tuple[str, ...]:
+    """Columns whose names suggest an outcome rather than a predictor.
+
+    Args:
+        columns: Column names to check.
+        exempt: Columns with a recorded confirmation that they are predictors.
+            Nothing is exempt by default: an exemption without evidence behind
+            it is how a leaked label reaches a baseline.
+    """
     found: list[str] = []
     for name in columns:
         token = _tokenise(name)
-        if token in allowed:
+        if _is_exempt(token, exempt):
             continue
         if any(re.search(pattern, token) for pattern in LABEL_PATTERNS):
             found.append(str(name))
@@ -250,6 +307,8 @@ class TextFeatures:
     plan: PositionalPlan | None
     source: str
     sha256: str
+    #: Confirmations that particular columns are predictors, not outcomes.
+    confirmations: tuple[Confirmation, ...] = ()
 
     @property
     def n_sessions(self) -> int:
@@ -278,6 +337,8 @@ class TextFeatures:
         }
         if self.id_column is not None:
             record["id_column"] = self.id_column
+        if self.confirmations:
+            record["confirmed_predictors"] = [entry.record() for entry in self.confirmations]
         if self.plan is not None:
             record["ordering"] = {
                 "rule": self.plan.rule,
@@ -313,13 +374,23 @@ def _refuse_without_identifier(path: Path, columns: Sequence[str], n_rows: int) 
     raise TextFeatureError(msg)
 
 
-def load(path: Path, *, positional: PositionalPlan | None = None) -> TextFeatures:
+def load(
+    path: Path,
+    *,
+    positional: PositionalPlan | None = None,
+    exempt: Sequence[str] = (),
+    confirmations: Sequence[Confirmation] = (),
+) -> TextFeatures:
     """Read and validate the manuscript's text features.
 
     Args:
         path: The CSV.
         positional: An ordering rule, used only if the table has no identifier
             column. An identifier always wins: it needs no external promise.
+        exempt: Columns with a recorded confirmation that they are predictors
+            rather than outcomes.
+        confirmations: Those confirmations, carried through to the manifest so
+            the exemption travels with the results that depend on it.
 
     Raises:
         TextFeatureError: if the file is unreadable, contains a column that
@@ -333,14 +404,15 @@ def load(path: Path, *, positional: PositionalPlan | None = None) -> TextFeature
 
     frame.columns = [str(name).strip() for name in frame.columns]
 
-    suspicious = label_like_columns(list(frame.columns))
+    suspicious = label_like_columns(list(frame.columns), exempt=exempt)
     if suspicious:
         msg = (
             f"{path.name} contains column(s) that look like questionnaire outcomes "
             f"rather than text features: {list(suspicious)}. Using them would leak "
             f"the label into the predictor set, so the file is refused. Remove those "
             f"columns, or if they are genuinely predictors, add them to "
-            f"LABEL_ALLOWLIST in this module with the reason."
+            f"model.text_features.confirmed_predictors with a statement from "
+            f"whoever knows how they were produced, attributed and dated."
         )
         raise TextFeatureError(msg)
 
@@ -356,10 +428,10 @@ def load(path: Path, *, positional: PositionalPlan | None = None) -> TextFeature
                 path.name,
                 id_column,
             )
-        return _from_identifier(path, frame, id_column)
+        return _from_identifier(path, frame, id_column, confirmations)
 
     assert positional is not None
-    return _from_position(path, frame, positional)
+    return _from_position(path, frame, positional, confirmations)
 
 
 def _features_of(frame: pd.DataFrame, path: Path, id_column: str | None) -> tuple[str, ...]:
@@ -374,7 +446,12 @@ def _renamed(frame: pd.DataFrame, features: Sequence[str]) -> pd.DataFrame:
     return frame.rename(columns={name: normalise_name(name) for name in features})
 
 
-def _from_identifier(path: Path, frame: pd.DataFrame, id_column: str) -> TextFeatures:
+def _from_identifier(
+    path: Path,
+    frame: pd.DataFrame,
+    id_column: str,
+    confirmations: Sequence[Confirmation] = (),
+) -> TextFeatures:
     """Match rows to sessions by the table's own identifier."""
     features = _features_of(frame, path, id_column)
     renamed = _renamed(frame, features).rename(columns={id_column: "session_id"})
@@ -398,10 +475,16 @@ def _from_identifier(path: Path, frame: pd.DataFrame, id_column: str) -> TextFea
         plan=None,
         source=path.name,
         sha256=_digest(path),
+        confirmations=tuple(confirmations),
     )
 
 
-def _from_position(path: Path, frame: pd.DataFrame, plan: PositionalPlan) -> TextFeatures:
+def _from_position(
+    path: Path,
+    frame: pd.DataFrame,
+    plan: PositionalPlan,
+    confirmations: Sequence[Confirmation] = (),
+) -> TextFeatures:
     """Match rows to sessions by position, under a stated ordering rule.
 
     Both counts are checked against the rule rather than against each other, so
@@ -439,6 +522,7 @@ def _from_position(path: Path, frame: pd.DataFrame, plan: PositionalPlan) -> Tex
         plan=plan,
         source=path.name,
         sha256=_digest(path),
+        confirmations=tuple(confirmations),
     )
 
 
@@ -449,7 +533,29 @@ def load_configured(work_root: Path, config: TextFeaturesConfig) -> TextFeatures
         msg = f"the text feature table is not at {config.path} under the work root"
         raise TextFeatureError(msg)
     plan = resolve_positional(work_root, config) if config.identification == "positional" else None
-    return load(path, positional=plan)
+    confirmations = [
+        Confirmation(
+            columns=tuple(entry.columns),
+            statement=" ".join(entry.statement.split()),
+            confirmed_by=entry.confirmed_by,
+            confirmed_on=entry.confirmed_on,
+        )
+        for entry in config.confirmed_predictors
+    ]
+    for entry in confirmations:
+        logger.info(
+            "%s exempted from the outcome check: %s (confirmed by %s on %s)",
+            list(entry.columns),
+            entry.statement,
+            entry.confirmed_by,
+            entry.confirmed_on,
+        )
+    return load(
+        path,
+        positional=plan,
+        exempt=config.exempt_columns,
+        confirmations=confirmations,
+    )
 
 
 # ---------------------------------------------------------------------------

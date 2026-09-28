@@ -387,6 +387,53 @@ back.
 """
 
 
+def _independence_section(text: TextFeatures) -> str:
+    """Why the text baseline does not already contain the outcome.
+
+    The confirmatory tests compare new modalities against this baseline, so a
+    baseline built partly from the questionnaires would make those comparisons
+    meaningless - and the two columns in question are named after the very
+    constructs the outcomes measure. Recorded the same way as the ordering rule:
+    quoted, attributed and dated, rather than asserted.
+    """
+    lines = [
+        "### Why the text baseline is independent of the outcomes",
+        "",
+        "Every confirmatory test in this analysis compares the new modalities "
+        "against the text features, so a text feature derived from a questionnaire "
+        "would make those comparisons meaningless - the baseline would already know "
+        "the answer.",
+        "",
+        "Two of the text columns are named after the constructs the outcomes "
+        "measure, which is exactly what a leaked subscale would look like. The "
+        "pipeline flags such names by default and refuses to use them; they are "
+        "used here only because their provenance was confirmed by someone who knows "
+        "how they were produced:",
+        "",
+    ]
+    for entry in text.confirmations:
+        columns = ", ".join(f"`{name}`" for name in entry.columns)
+        lines.extend(
+            [
+                f"On {columns}:",
+                "",
+                f"> {entry.statement}",
+                "",
+                f"— {entry.confirmed_by}, {entry.confirmed_on}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            f"The same statements are in `{MANIFEST_FILE}`. No other column in the "
+            f"text table is exempt from that check, and nothing is exempt without a "
+            f"statement like the above recorded against it.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _zero_variance_section(features: pd.DataFrame, feature_columns: Sequence[str]) -> str:
     """Which features carry no information in *this* bundle.
 
@@ -599,7 +646,11 @@ both equal {text.plan.expected_rows}. **The session IDs are now written into
 `docs/decisions/0014` for why this was handled so carefully.
 """
         )
-    elif text is None:
+
+    if text is not None and text.confirmations:
+        parts.append(_independence_section(text))
+
+    if text is None:
         parts.append(
             """### The text baseline is not in this bundle
 

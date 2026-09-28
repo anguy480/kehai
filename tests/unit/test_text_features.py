@@ -9,6 +9,7 @@ belong to someone else.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Final
 
 import pandas as pd
 import pytest
@@ -16,6 +17,12 @@ from pydantic import ValidationError
 
 from vc_multimodal.config import TextFeaturesConfig, load_config
 from vc_multimodal.modeling import text_features as tf
+
+#: The columns Prof. Tanaka confirmed are transcript-derived topic ratings.
+#: Supplied here because the real run supplies it from the configuration: the
+#: outcome check flags affective construct names by design, and nothing is
+#: exempt without a recorded confirmation.
+CONFIRMED: Final = ("Agenda_anxiety", "Agenda_depression")
 
 
 def write_csv(path: Path, frame: pd.DataFrame) -> Path:
@@ -43,46 +50,46 @@ class TestIdentifierIsRequired:
     def test_a_table_with_no_identifier_is_refused(self, tmp_path: Path) -> None:
         path = write_csv(tmp_path / "nlp.csv", pd.DataFrame(manuscript_columns()))
         with pytest.raises(tf.TextFeatureError, match="no identifier column"):
-            tf.load(path)
+            tf.load(path, exempt=CONFIRMED)
 
     def test_the_refusal_says_row_order_is_not_an_identifier(self, tmp_path: Path) -> None:
         path = write_csv(tmp_path / "nlp.csv", pd.DataFrame(manuscript_columns()))
         with pytest.raises(tf.TextFeatureError) as excinfo:
-            tf.load(path)
+            tf.load(path, exempt=CONFIRMED)
         assert "Row order is not an identifier" in str(excinfo.value)
 
     def test_the_refusal_lists_the_columns_it_did_find(self, tmp_path: Path) -> None:
         path = write_csv(tmp_path / "nlp.csv", pd.DataFrame(manuscript_columns()))
         with pytest.raises(tf.TextFeatureError) as excinfo:
-            tf.load(path)
+            tf.load(path, exempt=CONFIRMED)
         assert "Jaccard" in str(excinfo.value)
 
     @pytest.mark.parametrize("name", ["session_id", "session", "id", "recording_id", "file_id"])
     def test_any_accepted_identifier_name_works(self, tmp_path: Path, name: str) -> None:
         frame = pd.DataFrame({name: [1, 2, 3], **manuscript_columns()})
-        features = tf.load(write_csv(tmp_path / "nlp.csv", frame))
+        features = tf.load(write_csv(tmp_path / "nlp.csv", frame), exempt=CONFIRMED)
         assert features.id_column == name
         assert list(features.frame["session_id"]) == [1, 2, 3]
 
     def test_the_identifier_is_found_whatever_its_case(self, tmp_path: Path) -> None:
         frame = pd.DataFrame({"Session_ID": [1, 2, 3], **manuscript_columns()})
-        features = tf.load(write_csv(tmp_path / "nlp.csv", frame))
+        features = tf.load(write_csv(tmp_path / "nlp.csv", frame), exempt=CONFIRMED)
         assert features.id_column == "Session_ID"
 
     def test_a_non_numeric_identifier_is_refused(self, tmp_path: Path) -> None:
         frame = pd.DataFrame({"session_id": ["s1", "s2", "s3"], **manuscript_columns()})
         with pytest.raises(tf.TextFeatureError, match="non-numeric"):
-            tf.load(write_csv(tmp_path / "nlp.csv", frame))
+            tf.load(write_csv(tmp_path / "nlp.csv", frame), exempt=CONFIRMED)
 
     def test_a_repeated_session_is_refused(self, tmp_path: Path) -> None:
         frame = pd.DataFrame({"session_id": [1, 2, 2], **manuscript_columns()})
         with pytest.raises(tf.TextFeatureError, match="more than one row"):
-            tf.load(write_csv(tmp_path / "nlp.csv", frame))
+            tf.load(write_csv(tmp_path / "nlp.csv", frame), exempt=CONFIRMED)
 
     def test_an_identifier_with_no_features_is_refused(self, tmp_path: Path) -> None:
         frame = pd.DataFrame({"session_id": [1, 2, 3]})
         with pytest.raises(tf.TextFeatureError, match="no feature columns"):
-            tf.load(write_csv(tmp_path / "nlp.csv", frame))
+            tf.load(write_csv(tmp_path / "nlp.csv", frame), exempt=CONFIRMED)
 
 
 class TestOutcomeColumnsAreRefused:
@@ -111,21 +118,39 @@ class TestOutcomeColumnsAreRefused:
             {"session_id": [1, 2, 3], name: [1.0, 2.0, 3.0], **manuscript_columns()}
         )
         with pytest.raises(tf.TextFeatureError, match="questionnaire outcomes"):
-            tf.load(write_csv(tmp_path / "nlp.csv", frame))
+            tf.load(write_csv(tmp_path / "nlp.csv", frame), exempt=CONFIRMED)
 
     def test_the_refusal_explains_the_leak(self, tmp_path: Path) -> None:
         frame = pd.DataFrame({"session_id": [1, 2, 3], "K6": [1.0, 2.0, 3.0]})
         with pytest.raises(tf.TextFeatureError) as excinfo:
-            tf.load(write_csv(tmp_path / "nlp.csv", frame))
+            tf.load(write_csv(tmp_path / "nlp.csv", frame), exempt=CONFIRMED)
         assert "leak the label" in str(excinfo.value)
 
-    def test_the_agenda_ratings_are_not_mistaken_for_outcomes(self) -> None:
-        # Agenda_anxiety and Agenda_depression are LLM ratings of what was
-        # discussed, not questionnaire values, so they must pass.
-        assert tf.label_like_columns(["Agenda_anxiety", "Agenda_depression"]) == ()
+    def test_the_agenda_ratings_are_flagged_without_a_confirmation(self) -> None:
+        # `anxiety` is exactly what a leaked K6 subscale would be called, and no
+        # pattern can tell that from a topic rating, so the default is to flag.
+        assert tf.label_like_columns(["Agenda_anxiety", "Agenda_depression"]) == (
+            "Agenda_anxiety",
+            "Agenda_depression",
+        )
 
-    def test_the_manuscript_columns_all_pass(self) -> None:
-        assert tf.label_like_columns(list(manuscript_columns())) == ()
+    def test_a_recorded_confirmation_is_what_lets_them_through(self) -> None:
+        assert tf.label_like_columns(list(CONFIRMED), exempt=CONFIRMED) == ()
+
+    def test_a_confirmation_covers_the_renamed_column_too(self) -> None:
+        # The exemption must survive the rename into this project's convention,
+        # or it would hold while loading the file and lapse once joined.
+        assert tf.label_like_columns(["text__agenda_anxiety"], exempt=CONFIRMED) == ()
+
+    def test_a_confirmation_does_not_cover_a_different_column(self) -> None:
+        for other in ("anxiety_total", "depression_subscale", "distress_index"):
+            assert tf.label_like_columns([other], exempt=CONFIRMED) == (other,)
+
+    def test_an_unrelated_agenda_column_was_never_in_question(self) -> None:
+        assert tf.label_like_columns(["Agenda_social", "Agenda_work"]) == ()
+
+    def test_the_manuscript_columns_all_pass_with_the_confirmation(self) -> None:
+        assert tf.label_like_columns(list(manuscript_columns()), exempt=CONFIRMED) == ()
 
 
 class TestNames:
@@ -137,7 +162,7 @@ class TestNames:
 
     def test_the_family_prefix_lets_text_be_selected_like_any_other(self, tmp_path: Path) -> None:
         frame = pd.DataFrame({"session_id": [1, 2, 3], **manuscript_columns()})
-        features = tf.load(write_csv(tmp_path / "nlp.csv", frame))
+        features = tf.load(write_csv(tmp_path / "nlp.csv", frame), exempt=CONFIRMED)
         assert all(name.startswith("text__") for name in features.feature_columns)
 
 
@@ -149,7 +174,7 @@ class TestJoin:
 
     def theirs(self, tmp_path: Path, session_ids: list[int]) -> tf.TextFeatures:
         frame = pd.DataFrame({"session_id": session_ids, "Jaccard": [0.5] * len(session_ids)})
-        return tf.load(write_csv(tmp_path / "nlp.csv", frame))
+        return tf.load(write_csv(tmp_path / "nlp.csv", frame), exempt=CONFIRMED)
 
     def test_a_complete_join_reports_as_complete(self, tmp_path: Path) -> None:
         merged, report = tf.join(self.ours([1, 2, 3]), self.theirs(tmp_path, [1, 2, 3]))
@@ -161,7 +186,7 @@ class TestJoin:
         ours = pd.DataFrame({"session_id": [1, 2, 3], "turns__latency_median": [10.0, 20.0, 30.0]})
         # Same sessions, reverse order, distinguishable values.
         frame = pd.DataFrame({"session_id": [3, 2, 1], "Jaccard": [0.3, 0.2, 0.1]})
-        text = tf.load(write_csv(tmp_path / "nlp.csv", frame))
+        text = tf.load(write_csv(tmp_path / "nlp.csv", frame), exempt=CONFIRMED)
         merged, _ = tf.join(ours, text)
         by_session = merged.set_index("session_id")["text__jaccard"]
         assert by_session.loc[1] == pytest.approx(0.1)
@@ -391,14 +416,14 @@ class TestManifestRecord:
 
     def test_an_identifier_join_records_the_column_and_no_ordering(self, tmp_path: Path) -> None:
         frame = pd.DataFrame({"session_id": [1, 2], "Jaccard": [0.1, 0.2]})
-        record = tf.load(write_csv(tmp_path / "nlp.csv", frame)).manifest_record()
+        record = tf.load(write_csv(tmp_path / "nlp.csv", frame), exempt=CONFIRMED).manifest_record()
         assert record["identification"] == "identifier"
         assert record["id_column"] == "session_id"
         assert "ordering" not in record
 
     def test_the_record_names_features_and_never_values(self, tmp_path: Path) -> None:
         frame = pd.DataFrame({"session_id": [1, 2], "Jaccard": [0.123456, 0.2]})
-        record = tf.load(write_csv(tmp_path / "nlp.csv", frame)).manifest_record()
+        record = tf.load(write_csv(tmp_path / "nlp.csv", frame), exempt=CONFIRMED).manifest_record()
         assert record["features"] == ["text__jaccard"]
         assert "0.123456" not in str(record)
 
@@ -458,3 +483,123 @@ class TestPositionalJoinWarnsOnDivergentCohorts:
         ours = pd.DataFrame({"session_id": [1, 2, 3], "turns__latency_median": [1.0] * 3})
         tf.join(ours, text)
         assert "saw different data" not in package_logs.text
+
+
+# ---------------------------------------------------------------------------
+# the confirmation that earns an exemption
+# ---------------------------------------------------------------------------
+TANAKA_STATEMENT = (
+    "Agenda_anxiety and Agenda_depression in nlp_features.csv are LLM-rated topic "
+    "scores derived from participant transcripts only, not from the K6 or SRS-2 "
+    "questionnaires."
+)
+
+
+def confirmed_config(**extra: object) -> TextFeaturesConfig:
+    payload: dict[str, object] = {
+        "path": "nlp.csv",
+        "identification": "identifier",
+        "positional": None,
+        "confirmed_predictors": [
+            {
+                "columns": list(CONFIRMED),
+                "statement": TANAKA_STATEMENT,
+                "confirmed_by": "Prof. Tanaka",
+                "confirmed_on": "2026-09-28",
+            }
+        ],
+    }
+    payload.update(extra)
+    return TextFeaturesConfig.model_validate(payload)
+
+
+class TestAnExemptionNeedsEvidence:
+    def test_a_confirmation_lists_the_columns_it_covers(self) -> None:
+        assert confirmed_config().exempt_columns == CONFIRMED
+
+    def test_no_confirmations_means_nothing_is_exempt(self) -> None:
+        config = TextFeaturesConfig.model_validate(
+            {"path": "nlp.csv", "identification": "identifier", "positional": None}
+        )
+        assert config.exempt_columns == ()
+
+    def test_a_bare_assertion_is_not_a_confirmation(self) -> None:
+        with pytest.raises(ValidationError, match="what was established"):
+            confirmed_config(
+                confirmed_predictors=[
+                    {
+                        "columns": ["Agenda_anxiety"],
+                        "statement": "it is fine",
+                        "confirmed_by": "someone",
+                        "confirmed_on": "2026-09-28",
+                    }
+                ]
+            )
+
+    def test_an_unattributed_confirmation_is_refused(self) -> None:
+        # An exemption nobody can be asked about is not evidence.
+        with pytest.raises(ValidationError, match="who confirmed it and when"):
+            confirmed_config(
+                confirmed_predictors=[
+                    {
+                        "columns": ["Agenda_anxiety"],
+                        "statement": TANAKA_STATEMENT,
+                        "confirmed_by": "",
+                        "confirmed_on": "2026-09-28",
+                    }
+                ]
+            )
+
+    def test_a_confirmation_covering_no_column_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="at least one column"):
+            confirmed_config(
+                confirmed_predictors=[
+                    {
+                        "columns": [],
+                        "statement": TANAKA_STATEMENT,
+                        "confirmed_by": "Prof. Tanaka",
+                        "confirmed_on": "2026-09-28",
+                    }
+                ]
+            )
+
+    def test_the_shipped_config_carries_the_confirmation(self) -> None:
+        text = load_config(Path("config/default.yaml")).model.text_features
+        assert text is not None
+        entry = next(e for e in text.confirmed_predictors if "Agenda_anxiety" in e.columns)
+        assert entry.confirmed_by == "Prof. Tanaka"
+        assert "transcripts only" in " ".join(entry.statement.split())
+        assert "not from the K6 or SRS-2" in " ".join(entry.statement.split())
+
+
+class TestTheConfirmationReachesTheManifest:
+    def build(self, tmp_path: Path) -> tf.TextFeatures:
+        frame = pd.DataFrame({"session_id": [1, 2, 3], **manuscript_columns()})
+        write_csv(tmp_path / "nlp.csv", frame)
+        return tf.load_configured(tmp_path, confirmed_config())
+
+    def test_the_statement_is_recorded_verbatim(self, tmp_path: Path) -> None:
+        record = self.build(tmp_path).manifest_record()
+        entry = record["confirmed_predictors"][0]
+        assert entry["statement"] == TANAKA_STATEMENT
+        assert entry["columns"] == list(CONFIRMED)
+
+    def test_the_attribution_is_recorded(self, tmp_path: Path) -> None:
+        entry = self.build(tmp_path).manifest_record()["confirmed_predictors"][0]
+        assert entry["confirmed_by"] == "Prof. Tanaka"
+        assert entry["confirmed_on"] == "2026-09-28"
+
+    def test_no_confirmations_records_nothing(self, tmp_path: Path) -> None:
+        frame = pd.DataFrame({"session_id": [1], "Jaccard": [0.1]})
+        loaded = tf.load(write_csv(tmp_path / "nlp.csv", frame))
+        assert "confirmed_predictors" not in loaded.manifest_record()
+
+    def test_loading_through_the_config_applies_the_exemption(self, tmp_path: Path) -> None:
+        # The end-to-end property: the real file loads because a confirmation
+        # exists, and would be refused without one.
+        loaded = self.build(tmp_path)
+        assert "text__agenda_anxiety" in loaded.feature_columns
+
+        no_confirmation = confirmed_config(confirmed_predictors=[])
+        with pytest.raises(tf.TextFeatureError, match="questionnaire outcomes"):
+            tf.load_configured(tmp_path, no_confirmation)

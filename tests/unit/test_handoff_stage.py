@@ -993,3 +993,77 @@ class TestTheLabelsFileSection:
 
         assert table.targets == tuple(default_config.model.targets)
         assert table.n_rows == 1
+
+
+# ---------------------------------------------------------------------------
+# the text baseline's independence from the outcomes
+# ---------------------------------------------------------------------------
+class TestTheIndependenceSection:
+    def readme(self, default_config: AppConfig, roots: DataRoots, repo: Path) -> str:
+        return (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
+
+    def with_text(self, roots: DataRoots, n: int = 3) -> None:
+        directory = roots.work / "diarization" / "diarizations_original"
+        directory.mkdir(parents=True, exist_ok=True)
+        for session_id in range(1, n + 1):
+            (directory / f"{session_id}.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nx\n")
+        pd.DataFrame(
+            {
+                "Jaccard": [0.1] * n,
+                "Agenda_anxiety": [0.2] * n,
+                "Agenda_depression": [0.3] * n,
+            }
+        ).to_csv(roots.work / "nlp_features.csv", index=False)
+
+    def config_for(self, n: int) -> AppConfig:
+        return load_config(
+            DEFAULT_CONFIG_PATH,
+            overrides={"model.text_features.positional.expected_rows": n},
+        )
+
+    def test_the_statement_is_quoted_and_attributed(self, roots: DataRoots, repo: Path) -> None:
+        write_features(roots, feature_table(load_config(DEFAULT_CONFIG_PATH), [1, 2, 3]))
+        self.with_text(roots)
+        result = handoff_stage.run(self.config_for(3), roots, repo=repo, now=MOMENT)
+        text = (result.path / handoff_stage.README_FILE).read_text()
+        assert "independent of the outcomes" in text
+        assert "not from the K6 or SRS-2" in text
+        assert "Prof. Tanaka, 2026-09-28" in text
+
+    def test_it_names_the_columns_the_statement_covers(self, roots: DataRoots, repo: Path) -> None:
+        write_features(roots, feature_table(load_config(DEFAULT_CONFIG_PATH), [1, 2, 3]))
+        self.with_text(roots)
+        result = handoff_stage.run(self.config_for(3), roots, repo=repo, now=MOMENT)
+        text = (result.path / handoff_stage.README_FILE).read_text()
+        assert "`Agenda_anxiety`, `Agenda_depression`" in text
+
+    def test_it_says_why_this_matters_for_the_confirmatory_tests(
+        self, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, feature_table(load_config(DEFAULT_CONFIG_PATH), [1, 2, 3]))
+        self.with_text(roots)
+        result = handoff_stage.run(self.config_for(3), roots, repo=repo, now=MOMENT)
+        text = (result.path / handoff_stage.README_FILE).read_text()
+        assert "the baseline would already know" in text
+
+    def test_it_says_nothing_else_is_exempt(self, roots: DataRoots, repo: Path) -> None:
+        write_features(roots, feature_table(load_config(DEFAULT_CONFIG_PATH), [1, 2, 3]))
+        self.with_text(roots)
+        result = handoff_stage.run(self.config_for(3), roots, repo=repo, now=MOMENT)
+        text = (result.path / handoff_stage.README_FILE).read_text()
+        assert "nothing is exempt without a statement" in text
+
+    def test_the_manifest_carries_the_same_statement(self, roots: DataRoots, repo: Path) -> None:
+        write_features(roots, feature_table(load_config(DEFAULT_CONFIG_PATH), [1, 2, 3]))
+        self.with_text(roots)
+        result = handoff_stage.run(self.config_for(3), roots, repo=repo, now=MOMENT)
+        manifest = json.loads((result.path / handoff_stage.MANIFEST_FILE).read_text())
+        entry = manifest["text_features"]["confirmed_predictors"][0]
+        assert entry["confirmed_by"] == "Prof. Tanaka"
+        assert "transcripts only" in entry["statement"]
+
+    def test_a_bundle_with_no_text_baseline_says_nothing_about_it(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, feature_table(default_config))
+        assert "independent of the outcomes" not in self.readme(default_config, roots, repo)

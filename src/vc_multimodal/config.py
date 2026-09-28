@@ -813,6 +813,50 @@ class PositionalOrderingConfig(_Base):
         return self
 
 
+class ConfirmedPredictor(_Base):
+    """A column exempted from the outcome check, and the confirmation for it.
+
+    The check that refuses a questionnaire-derived column is deliberately broad,
+    so it also flags names that describe affective constructs - a column called
+    `anxiety` is exactly what a leaked K6 subscale would be called. Some of
+    those are genuinely predictors: the manuscript's LLM-rated agenda scores
+    describe what a participant talked about.
+
+    Telling the two apart is not something code can do, so an exemption exists
+    only where someone who knows how the column was produced has said so. The
+    statement is quoted, attributed and dated, and it is copied into the run
+    manifest, because "we checked" is not evidence a reviewer can weigh.
+    """
+
+    # Column names as they appear in the source file.
+    columns: tuple[str, ...]
+    # What was confirmed, in the confirmer's own terms.
+    statement: str
+    confirmed_by: str
+    confirmed_on: str
+
+    @model_validator(mode="after")
+    def _an_exemption_needs_evidence(self) -> Self:
+        if not self.columns:
+            msg = "a confirmed_predictors entry must name at least one column"
+            raise ValueError(msg)
+        if len(self.statement.strip()) < MIN_PROVENANCE_CHARS:
+            msg = (
+                f"the confirmation for {list(self.columns)} must say what was "
+                f"established and how it is known. Exempting a column from the "
+                f"outcome check on a bare assertion is how a leaked label gets into "
+                f"a baseline."
+            )
+            raise ValueError(msg)
+        if not self.confirmed_by.strip() or not self.confirmed_on.strip():
+            msg = (
+                f"the confirmation for {list(self.columns)} must record who confirmed "
+                f"it and when; an unattributed exemption cannot be followed up"
+            )
+            raise ValueError(msg)
+        return self
+
+
 class TextFeaturesConfig(_Base):
     """The manuscript's text features: the baseline the new modalities face.
 
@@ -831,6 +875,13 @@ class TextFeaturesConfig(_Base):
     path: str
     identification: Literal["identifier", "positional"]
     positional: PositionalOrderingConfig | None
+    # Columns exempted from the outcome check, each with its confirmation.
+    confirmed_predictors: tuple[ConfirmedPredictor, ...] = ()
+
+    @property
+    def exempt_columns(self) -> tuple[str, ...]:
+        """Every column with a recorded confirmation behind it."""
+        return tuple(name for entry in self.confirmed_predictors for name in entry.columns)
 
     @model_validator(mode="after")
     def _positional_requires_its_rule(self) -> Self:

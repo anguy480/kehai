@@ -101,6 +101,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The outcome check now flags column names describing affective constructs
+  (`anxiety`, `depress`, `distress`), and a column is exempt only where a
+  confirmation is recorded against it in `model.text_features.confirmed_predictors`
+  with a statement, an attribution and a date. This replaces a hardcoded allowlist
+  that named the manuscript's two agenda columns beside patterns that never
+  matched those names, so the exemption read as deliberate while never firing -
+  and would have exempted them silently had such a pattern been added later.
+
+  Prof. Tanaka's confirmation that `Agenda_anxiety` and `Agenda_depression` are
+  LLM-rated topic scores derived from participant transcripts only, and not from
+  the K6 or SRS-2 questionnaires, is recorded there, quoted into the run manifest,
+  and quoted in the handoff README beside the row-ordering provenance. The
+  baseline's independence from the outcomes is documented rather than assumed,
+  which matters because every confirmatory test compares against that baseline.
+
 - `turns__overlap_ratio` is no longer a confirmatory feature. The lab's
   whisper-diarization output partitions time - every moment belongs to exactly
   one speaker - so pairwise overlap is exactly 0.0000 s in all 62 sessions, and
