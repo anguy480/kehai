@@ -92,6 +92,43 @@ What follows from that for the analysis:
 """
 
 
+#: Why one turn feature cannot vary, kept apart from the list of features that
+#: actually turned out constant so the explanation stays attached to the feature
+#: it explains rather than to whichever features happen to be flat.
+OVERLAP_CONSTANT_NOTE: Final = """\
+`turns__overlap_ratio` is zero for every session, and that is a property of the
+diarizer rather than of the conversations. The diarization assigns every moment
+to exactly one speaker, so simultaneous speech cannot be represented in its
+output at all. Measured across the cohort, speech attributed to the two roles
+overlaps by exactly 0.0000 seconds.
+
+It is kept in the table rather than dropped, so the limitation is visible in the
+bundle instead of invisible in its absence. **Do not read it as evidence that
+these participants never overlapped or talked over each other.** It becomes
+informative unchanged if the recordings are re-diarized with a tool that permits
+overlapping speech.
+"""
+
+#: Why the interruption rate is not quite constant, and why its non-zero values
+#: are not what the name suggests.
+INTERRUPTION_FLOOR_NOTE: Final = """\
+`turns__interruption_rate` is held down by the same limitation, because an
+interruption is defined by one speaker beginning before the other has finished -
+which is exactly what the diarizer cannot represent.
+
+Where it is not zero, the cause has been checked and is not observed
+simultaneous speech. Turn construction bridges gaps shorter than a third of a
+second within one speaker's own speech, and where the other person said
+something brief inside such a gap - a short acknowledgement, say - the bridged
+turn ends up containing it. Rebuilding the same sessions with no bridging at all
+yields no interruptions anywhere.
+
+So treat any non-zero value here as a measurement artifact rather than as
+observed interrupting behaviour, and do not interpret differences between
+sessions on this feature.
+"""
+
+
 def notes() -> tuple[str, ...]:
     """Every note the handoff README must carry, in order."""
     return (FACE_BACKEND_NOTE, GAZE_ABSENCE_NOTE, REMOTE_RECORDING_NOTE)

@@ -60,8 +60,9 @@ RESULTS_FILENAME: Final = "model_results.csv"
 COMPARISONS_FILENAME: Final = "model_comparisons.csv"
 SUMMARY_FILENAME: Final = "model_summary.md"
 
-#: Column naming the session in a labels file, tried in order.
-_LABEL_ID_COLUMNS: Final = ("session_id", "session", "id")
+#: Column naming the session in a labels file, tried in order. Public because
+#: the handoff README has to tell the label holder what is accepted.
+LABEL_ID_COLUMNS: Final = ("session_id", "session", "id")
 
 
 class ModelError(RuntimeError):
@@ -99,11 +100,11 @@ def load_labels(path: Path, targets: Sequence[str]) -> LabelTable:
 
     frame.columns = [str(name).strip() for name in frame.columns]
     lowered = {name.lower(): name for name in frame.columns}
-    id_column = next((lowered[name] for name in _LABEL_ID_COLUMNS if name in lowered), None)
+    id_column = next((lowered[name] for name in LABEL_ID_COLUMNS if name in lowered), None)
     if id_column is None:
         msg = (
             f"{path.name} has no session identifier column. Tried "
-            f"{list(_LABEL_ID_COLUMNS)}, and found {list(frame.columns)}. The labels "
+            f"{list(LABEL_ID_COLUMNS)}, and found {list(frame.columns)}. The labels "
             f"are matched to features by session, never by row order."
         )
         raise ModelError(msg)

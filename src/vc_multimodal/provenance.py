@@ -54,6 +54,8 @@ class GitState:
     is_dirty: bool
     #: Paths with uncommitted changes, for the refusal message.
     dirty_paths: tuple[str, ...]
+    #: Where the code can be fetched from, empty when there is no remote.
+    remote: str = ""
 
     def record(self) -> dict[str, object]:
         """What the manifest carries."""
@@ -63,6 +65,7 @@ class GitState:
             "branch": self.branch,
             "dirty": self.is_dirty,
             "dirty_paths": list(self.dirty_paths),
+            "remote": self.remote,
         }
 
 
@@ -96,6 +99,30 @@ def _porcelain_path(line: str) -> str:
     return parts[1].strip() if len(parts) > 1 else parts[0].strip()
 
 
+def normalise_remote(url: str) -> str:
+    """A remote URL fit to put in a document someone else reads.
+
+    Three things to fix. An SSH remote is not clickable, so it becomes its https
+    form. A trailing `.git` is noise to a human. And an https remote can carry
+    credentials in its userinfo field, which is a perfectly ordinary way to have
+    cloned, and which must never be copied into a handoff bundle that gets
+    emailed.
+    """
+    text = url.strip()
+    if not text:
+        return ""
+    if text.startswith("git@") and ":" in text:
+        host, _, path = text[len("git@") :].partition(":")
+        text = f"https://{host}/{path}"
+    if "://" in text:
+        scheme, _, rest = text.partition("://")
+        # Strip any userinfo ahead of the host.
+        if "@" in rest.split("/", 1)[0]:
+            rest = rest.partition("@")[2]
+        text = f"{scheme}://{rest}"
+    return text.removesuffix(".git")
+
+
 def git_state(repo: Path) -> GitState | None:
     """The repository state, or None when `repo` is not a git checkout."""
     commit = _git(repo, "rev-parse", "HEAD")
@@ -111,6 +138,7 @@ def git_state(repo: Path) -> GitState | None:
         branch=_git(repo, "rev-parse", "--abbrev-ref", "HEAD") or "unknown",
         is_dirty=bool(dirty_paths),
         dirty_paths=dirty_paths,
+        remote=normalise_remote(_git(repo, "remote", "get-url", "origin") or ""),
     )
 
 

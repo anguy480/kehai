@@ -51,6 +51,7 @@ from vc_multimodal.qc_notes import QcNotes
 from vc_multimodal.qc_notes import load as load_qc_notes
 from vc_multimodal.stages import aggregate as aggregate_stage
 from vc_multimodal.stages import face as face_stage
+from vc_multimodal.stages import model as model_stage
 
 logger = get_logger(__name__)
 
@@ -308,6 +309,158 @@ def _dropped_frame_section(qc: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+#: Feature whose constancy has a specific explanation worth attaching to it.
+_OVERLAP_FEATURE: Final = "turns__overlap_ratio"
+_INTERRUPTION_FEATURE: Final = "turns__interruption_rate"
+
+
+def _setup_section(git: GitState | None) -> str:
+    """How to get the tool, for someone who has only ever received a bundle."""
+    if git is not None and git.remote:
+        clone = f"git clone {git.remote}.git\ncd {git.remote.rstrip('/').rsplit('/', 1)[-1]}"
+        commit = f"git checkout {git.short}   # the commit this bundle was built from"
+    else:
+        clone = "# obtain the pipeline repository from whoever sent this bundle"
+        commit = ""
+
+    return f"""## Before you run this
+
+The analysis is one command from this project's own repository. Nothing in this
+bundle runs on its own.
+
+```
+# 1. Install uv, which manages the Python version and the dependencies
+#    (https://docs.astral.sh/uv/getting-started/installation/)
+
+# 2. Get the code
+{clone}
+{commit}
+
+# 3. Install everything. This needs Python 3.11, which uv fetches itself;
+#    no system Python is used and no extras are needed for the analysis.
+uv sync
+```
+
+Then run the analysis from the directory holding this bundle:
+
+```
+uv run vc model --features features.csv --labels <your labels file> --out results
+```
+"""
+
+
+def _labels_section(config: AppConfig) -> str:
+    """Exactly what the labels file has to look like."""
+    targets = list(config.model.targets)
+    header = ",".join(["session_id", *targets])
+    example_values = ",".join(["1", *(str(6 + index * 30) for index in range(len(targets)))])
+    accepted = ", ".join(f"`{name}`" for name in model_stage.LABEL_ID_COLUMNS)
+
+    return f"""## The labels file
+
+A CSV with one row per session: a session identifier, and one column per
+outcome. The first two lines should look like this:
+
+```
+{header}
+{example_values}
+```
+
+* The identifier column may be named any of {accepted}, and holds the session
+  numbers used throughout this bundle.
+* The outcome columns must be named exactly {", ".join(f"`{name}`" for name in targets)}.
+  A configured outcome that is absent is reported and skipped; if none of them is
+  present the command stops rather than guessing which column is which.
+* Order does not matter. **Rows are matched by session identifier, never by
+  position.**
+* Extra columns are ignored, so a working spreadsheet can be used as it is.
+
+**A session missing from the labels file is excluded from the analysis and named
+in the output**, both in the printed summary and in the results. The reverse is
+also reported: a session with a label but no features. Every figure in the
+results is computed over the sessions present in both, and the count is stated,
+so a smaller sample than expected is visible rather than silent.
+
+**No label is ever written into any output of that command** - not the values,
+not a per-session prediction, not a residual - and nothing needs to be sent
+back.
+"""
+
+
+def _zero_variance_section(features: pd.DataFrame, feature_columns: Sequence[str]) -> str:
+    """Which features carry no information in *this* bundle.
+
+    Derived rather than written in advance, and derived through the same
+    function `vc aggregate` reports from, so the README and the stage cannot
+    disagree. The previous version of this section was prose asserting that two
+    turn features were constant; that was true of a three-session pilot and
+    false of the full cohort, where one of the two varies.
+    """
+    constant = aggregate_stage.constant_features(features, feature_columns)
+    lines: list[str] = []
+
+    if constant:
+        lines.extend(
+            [
+                f"### {len(constant)} feature(s) carry no information in this bundle",
+                "",
+                "These take the same value in every session, so no model can learn "
+                "anything from them. They are listed in the feature dictionary like any "
+                "other column and are kept in the table deliberately - a column of one "
+                "value records a limitation, where dropping it would hide one.",
+                "",
+            ]
+        )
+        for name in constant:
+            values = pd.to_numeric(features[name], errors="coerce").dropna()
+            shown = f"{values.iloc[0]:g}" if not values.empty else "absent"
+            lines.append(f"* `{name}` - every session is {shown}")
+        lines.append("")
+    else:
+        lines.extend(
+            [
+                "### Every feature varies across this bundle",
+                "",
+                "No feature takes the same value in every session, so none of them is "
+                "carrying zero information by construction.",
+                "",
+            ]
+        )
+
+    if _OVERLAP_FEATURE in constant:
+        lines.append(handoff_text.OVERLAP_CONSTANT_NOTE)
+
+    interruption = _interruption_lines(features, constant)
+    if interruption:
+        lines.extend(interruption)
+
+    return "\n".join(lines)
+
+
+def _interruption_lines(features: pd.DataFrame, constant: Sequence[str]) -> list[str]:
+    """What to say about the interruption rate, given what it actually did.
+
+    Three cases, and the difference between them matters to a reader: constant
+    at zero, varying but mostly zero for a reason, or genuinely varying.
+    """
+    if _INTERRUPTION_FEATURE not in features.columns:
+        return []
+    values = pd.to_numeric(features[_INTERRUPTION_FEATURE], errors="coerce").dropna()
+    if values.empty or _INTERRUPTION_FEATURE in constant:
+        # Constant: already listed above, and the floor note explains why.
+        return [handoff_text.INTERRUPTION_FLOOR_NOTE] if not values.empty else []
+
+    non_zero = int((values > 0).sum())
+    return [
+        f"`{_INTERRUPTION_FEATURE}` is not constant, but it is zero in "
+        f"{len(values) - non_zero} of {len(values)} session(s), and its largest value "
+        f"is {values.max():.3f} events per minute - roughly one detected event in a "
+        f"ten-minute conversation.",
+        "",
+        handoff_text.INTERRUPTION_FLOOR_NOTE,
+    ]
+
+
 def _readme(
     config: AppConfig,
     *,
@@ -352,6 +505,8 @@ def _readme(
         ),
         (CONFIG_FILE, "The configuration as it ran, in readable form."),
     ]
+    setup_section = _setup_section(git)
+    labels_section = _labels_section(config)
     files_table = "\n".join(
         ["| File | What it is |", "| --- | --- |"]
         + [f"| `{name}` | {what} |" for name, what in rows if name in result_files]
@@ -369,15 +524,8 @@ had access to them (see `docs/decisions/0001` in the repository).
 
 ## What to do with it
 
-The analysis runs on the machine that holds the labels:
-
-```
-vc model --features features.csv --labels <your labels file> --out <directory>
-```
-
-The labels file needs a `session_id` column and one column per outcome. **No
-label is ever written into any output of that command**, and no label needs to
-be sent back.
+{setup_section}
+{labels_section}
 
 ## Files
 
@@ -411,22 +559,7 @@ table, and state it.
 """
     )
 
-    parts.append(
-        """### Two turn features are constant at zero
-
-`turns__overlap_ratio` and `turns__interruption_rate` are zero for every
-session, and that is a property of the diarizer rather than of the
-conversations. The diarization assigns every moment to exactly one speaker, so
-simultaneous speech cannot be represented in its output; measured across all
-sessions, speaker overlap is exactly 0.0000 seconds.
-
-They are kept in the table rather than dropped, so that this limitation is
-visible in the bundle instead of being invisible in its absence. **Do not read
-them as evidence that these participants never interrupted or overlapped.**
-Both become informative unchanged if the recordings are re-diarized with a
-tool that permits overlapping speech.
-"""
-    )
+    parts.append(_zero_variance_section(features, feature_columns))
 
     if confirmed:
         parts.append(

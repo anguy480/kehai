@@ -25,6 +25,7 @@ from vc_multimodal.paths import DataRoots
 from vc_multimodal.qc_notes import QcNoteError
 from vc_multimodal.stages import aggregate as aggregate_stage
 from vc_multimodal.stages import handoff as handoff_stage
+from vc_multimodal.stages import model as model_stage
 from vc_multimodal.stages.handoff import HandoffError
 
 MOMENT = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
@@ -366,14 +367,14 @@ class TestTheReadme:
         write_features(roots, feature_table(default_config))
         assert "questionnaire scores" in self.readme(build(default_config, roots, repo))
 
-    def test_it_explains_the_constant_overlap_features(
+    def test_it_explains_the_constant_overlap_feature(
         self, default_config: AppConfig, roots: DataRoots, repo: Path
     ) -> None:
         write_features(roots, feature_table(default_config))
         text = self.readme(build(default_config, roots, repo))
         assert "turns__overlap_ratio" in text
-        assert "0.0000 seconds" in text
-        assert "never interrupted" in text
+        assert "exactly 0.0000 seconds" in text
+        assert "never overlapped or talked over each other" in text
 
     def test_it_carries_the_backend_and_gaze_notes(
         self, default_config: AppConfig, roots: DataRoots, repo: Path
@@ -697,3 +698,298 @@ class TestTheRemoteRecordingLimitation:
         write_features(roots, feature_table(default_config))
         text = (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
         assert "decide the threshold once" in text
+
+
+# ---------------------------------------------------------------------------
+# the zero-variance section, derived rather than asserted
+#
+# The previous version of this section was prose claiming two turn features were
+# constant. That was true of a three-session pilot and false of the full cohort,
+# where one of the two varies, so the README and the stage summary disagreed.
+# ---------------------------------------------------------------------------
+def variance_table(
+    default_config: AppConfig, *, overlap: list[float], interruption: list[float]
+) -> pd.DataFrame:
+    """A feature table with the two turn features set explicitly."""
+    frame = feature_table(default_config, list(range(1, len(overlap) + 1)))
+    frame["turns__overlap_ratio"] = overlap
+    frame["turns__interruption_rate"] = interruption
+    # Something that definitely varies, so "every feature is constant" is never
+    # accidentally the case.
+    frame["turns__latency_median"] = [1.0 + index for index in range(len(overlap))]
+    return frame
+
+
+def flowed(text: str) -> str:
+    """Prose with its line breaks collapsed.
+
+    A README is wrapped for reading, and rewrapping a sentence must not break a
+    test about what it says.
+    """
+    return " ".join(text.split())
+
+
+def named_as_constant(text: str) -> set[str]:
+    """The features the README lists as carrying no information."""
+    found: set[str] = set()
+    for line in text.splitlines():
+        if line.startswith("* `") and "every session is" in line:
+            found.add(line.split("`")[1])
+    return found
+
+
+class TestTheZeroVarianceSectionMatchesTheData:
+    def readme(self, default_config: AppConfig, roots: DataRoots, repo: Path) -> str:
+        return (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
+
+    def test_the_readme_names_exactly_the_computed_zero_variance_set(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        """The check that keeps the README and the stage from disagreeing."""
+        frame = variance_table(
+            default_config, overlap=[0.0, 0.0, 0.0], interruption=[0.0, 0.0, 0.09]
+        )
+        write_features(roots, frame)
+        result = build(default_config, roots, repo)
+        text = (result.path / handoff_stage.README_FILE).read_text()
+
+        shipped = pd.read_csv(result.path / handoff_stage.FEATURES_FILE)
+        columns = [name for name in shipped.columns if "__" in name]
+        expected = set(aggregate_stage.constant_features(shipped, columns))
+        assert expected, "the fixture should contain at least one constant feature"
+        assert named_as_constant(text) == expected
+
+    def test_a_feature_that_varies_is_not_called_constant(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(
+            roots,
+            variance_table(default_config, overlap=[0.0, 0.0, 0.0], interruption=[0.0, 0.0, 0.09]),
+        )
+        text = self.readme(default_config, roots, repo)
+        assert "turns__overlap_ratio" in named_as_constant(text)
+        assert "turns__interruption_rate" not in named_as_constant(text)
+
+    def test_a_varying_interruption_rate_is_described_as_mostly_zero(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(
+            roots,
+            variance_table(default_config, overlap=[0.0, 0.0, 0.0], interruption=[0.0, 0.0, 0.094]),
+        )
+        text = self.readme(default_config, roots, repo)
+        assert "is not constant, but it is zero in 2 of 3 session(s)" in text
+        assert "0.094 events per minute" in text
+
+    def test_a_varying_interruption_rate_still_carries_the_floor_explanation(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        # It is floored by the same limitation: an interruption needs overlap to
+        # be detectable at all.
+        write_features(
+            roots,
+            variance_table(default_config, overlap=[0.0, 0.0, 0.0], interruption=[0.0, 0.0, 0.09]),
+        )
+        text = self.readme(default_config, roots, repo)
+        assert "held down by the same limitation" in text
+        assert "measurement artifact" in text
+
+    def test_a_constant_interruption_rate_is_listed_and_explained(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(
+            roots,
+            variance_table(default_config, overlap=[0.0] * 3, interruption=[0.0] * 3),
+        )
+        text = self.readme(default_config, roots, repo)
+        assert "turns__interruption_rate" in named_as_constant(text)
+        assert "held down by the same limitation" in text
+        assert "is not constant" not in text
+
+    def test_the_overlap_explanation_is_absent_when_overlap_varies(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        # The explanation belongs to the feature, not to the section.
+        write_features(
+            roots,
+            variance_table(
+                default_config, overlap=[0.0, 0.01, 0.02], interruption=[0.0, 0.0, 0.09]
+            ),
+        )
+        text = self.readme(default_config, roots, repo)
+        assert "turns__overlap_ratio" not in named_as_constant(text)
+        assert "assigns every moment to exactly one speaker" not in text
+
+    def test_the_value_each_constant_feature_takes_is_stated(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(
+            roots,
+            variance_table(default_config, overlap=[0.0] * 3, interruption=[0.0] * 3),
+        )
+        text = self.readme(default_config, roots, repo)
+        assert "`turns__overlap_ratio` - every session is 0" in text
+
+
+# ---------------------------------------------------------------------------
+# getting the tool, and the labels file
+# ---------------------------------------------------------------------------
+class TestBeforeYouRunThis:
+    def readme(self, default_config: AppConfig, roots: DataRoots, repo: Path) -> str:
+        write_features(roots, feature_table(default_config))
+        return (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
+
+    def test_it_names_the_repository_to_clone(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/example/kehai.git",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        text = self.readme(default_config, roots, repo)
+        assert "git clone https://github.com/example/kehai.git" in text
+
+    def test_it_pins_the_commit_the_bundle_was_built_from(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/example/kehai.git",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        write_features(roots, feature_table(default_config))
+        result = build(default_config, roots, repo)
+        text = (result.path / handoff_stage.README_FILE).read_text()
+        assert result.git is not None
+        assert f"git checkout {result.git.short}" in text
+
+    def test_a_credentialed_remote_never_reaches_the_bundle(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        # Cloning with a token in the URL is ordinary; emailing it is not.
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "remote",
+                "add",
+                "origin",
+                # A fabricated credential, here to prove it is stripped.
+                "https://someone:sekrit@github.com/example/kehai.git",  # pragma: allowlist secret
+            ],
+            check=True,
+            capture_output=True,
+        )
+        text = self.readme(default_config, roots, repo)
+        assert "sekrit" not in text
+        assert "https://github.com/example/kehai" in text
+
+    def test_with_no_remote_it_says_to_ask_rather_than_inventing_a_url(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        text = self.readme(default_config, roots, repo)
+        assert "from whoever sent this bundle" in text
+        assert "git clone" not in text
+
+    def test_it_states_the_python_version_and_that_uv_provides_it(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        text = self.readme(default_config, roots, repo)
+        assert "Python 3.11" in text
+        assert "uv sync" in text
+        assert "no extras are needed" in text
+
+    def test_the_command_is_runnable_as_written(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        # `vc` is not on the path of someone who has only run `uv sync`.
+        text = self.readme(default_config, roots, repo)
+        assert "uv run vc model --features features.csv" in text
+
+
+class TestTheLabelsFileSection:
+    def readme(self, default_config: AppConfig, roots: DataRoots, repo: Path) -> str:
+        write_features(roots, feature_table(default_config))
+        return (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
+
+    def test_the_expected_column_names_come_from_the_configuration(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        text = self.readme(default_config, roots, repo)
+        for target in default_config.model.targets:
+            assert f"`{target}`" in text
+
+    def test_the_example_shows_the_first_two_lines(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        text = self.readme(default_config, roots, repo)
+        header = ",".join(["session_id", *default_config.model.targets])
+        assert header in text
+
+    def test_every_accepted_identifier_column_is_listed(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        text = self.readme(default_config, roots, repo)
+        for name in model_stage.LABEL_ID_COLUMNS:
+            assert f"`{name}`" in text
+
+    def test_it_says_rows_are_matched_by_identifier_not_position(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        assert "never by position" in flowed(self.readme(default_config, roots, repo))
+
+    def test_it_says_what_happens_to_a_session_with_no_label(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        text = self.readme(default_config, roots, repo)
+        assert "excluded from the analysis and named" in text
+
+    def test_it_says_the_reverse_case_is_reported_too(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        text = self.readme(default_config, roots, repo)
+        assert "a label but no features" in text
+
+    def test_it_repeats_that_no_label_is_written_out(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        text = self.readme(default_config, roots, repo)
+        assert "No label is ever written into any output" in text
+
+    def test_the_documented_header_is_one_the_loader_accepts(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path, tmp_path: Path
+    ) -> None:
+        """The example has to be a file the tool will actually read.
+
+        A README whose example fails on the first try costs the label holder a
+        round trip, and they cannot debug it without the code.
+        """
+        text = self.readme(default_config, roots, repo)
+        lead_in = "The first two lines should look like this:"
+        block = text.split(lead_in, 1)[1].split("```")[1]
+        lines = [line for line in block.strip().splitlines() if line.strip()]
+        path = tmp_path / "labels.csv"
+        path.write_text("\n".join(lines) + "\n")
+
+        table = model_stage.load_labels(path, default_config.model.targets)
+
+        assert table.targets == tuple(default_config.model.targets)
+        assert table.n_rows == 1
