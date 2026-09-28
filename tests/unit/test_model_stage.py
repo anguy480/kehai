@@ -316,3 +316,141 @@ class TestTheRun:
                 features_path=tmp_path / "absent.csv",
                 labels_path=labels_path,
             )
+
+
+# ---------------------------------------------------------------------------
+# the confirmatory path, end to end, through the correction
+#
+# This is the last step of the whole run, and it crashed after all 32 estimates
+# had been computed: the correction rebuilt a slotted dataclass from __dict__,
+# which does not exist on one. No test reached it, because every earlier fixture
+# left the `text` feature set with no columns - so no comparison could be built,
+# `collected` stayed empty, and the correction never ran at all.
+# ---------------------------------------------------------------------------
+def comparable_inputs(tmp_path: Path, n: int = 20) -> tuple[Path, Path]:
+    """Features where BOTH sides of every confirmatory comparison exist.
+
+    The text columns are the point: without them the comparison is skipped and
+    the correction is never exercised.
+    """
+    sessions = list(range(1, n + 1))
+    features = feature_table(
+        sessions, families=("turns", "prosody", "face_speaking", "face_listening")
+    )
+    for name in ("text__jaccard", "text__cosine", "text__bert", "text__mtld_patient"):
+        features[name] = RNG.normal(size=n)
+    labels = pd.DataFrame(
+        {
+            "session_id": sessions,
+            # Learnable from the turn features and not from the text ones, so
+            # the comparison has something to find.
+            "K6": 2.0 * features["turns__latency_median"] + RNG.normal(0, 0.5, n),
+        }
+    )
+    return (
+        write(tmp_path / "features.csv", features),
+        write(tmp_path / "labels.csv", labels),
+    )
+
+
+def comparison_config(**extra: object) -> AppConfig:
+    """The real confirmatory plan, shrunk. Both compared sets have columns."""
+    overrides: dict[str, object] = {
+        "model.text_features": None,
+        "model.n_permutations": 0,
+        "model.tiers.stability_repeats": 1,
+        "model.tiers.stability_folds": 3,
+        "model.models": ["elastic_net"],
+        "model.targets": ["K6"],
+        "model.feature_sets": {
+            "all": ["turns", "prosody", "face_speaking", "face_listening"],
+            "audio": ["turns", "prosody"],
+            "text": ["text"],
+        },
+    }
+    overrides.update(extra)
+    return load_config(DEFAULT_CONFIG_PATH, overrides=overrides)
+
+
+@pytest.fixture(scope="module")
+def corrected_run(tmp_path_factory: pytest.TempPathFactory) -> stage.ModelResult:
+    """One full run that reaches the multiplicity correction."""
+    tmp_path = tmp_path_factory.mktemp("model_corrected")
+    features_path, labels_path = comparable_inputs(tmp_path)
+    roots = DataRoots(data=tmp_path, work=tmp_path, out=tmp_path)
+    return stage.run(
+        comparison_config(),
+        roots,
+        features_path=features_path,
+        labels_path=labels_path,
+        out_dir=tmp_path / "out",
+    )
+
+
+@pytest.mark.slow
+class TestTheConfirmatoryPathCompletes:
+    def test_the_correction_runs_without_crashing(self, corrected_run: stage.ModelResult) -> None:
+        """The regression: this raised AttributeError on a slotted dataclass."""
+        assert corrected_run.tests
+
+    def test_both_output_files_are_written(self, corrected_run: stage.ModelResult) -> None:
+        assert corrected_run.results_path.exists()
+        assert corrected_run.comparisons_path.exists()
+        assert not pd.read_csv(corrected_run.results_path).empty
+        assert not pd.read_csv(corrected_run.comparisons_path).empty
+
+    def test_every_planned_comparison_was_actually_run(
+        self, corrected_run: stage.ModelResult
+    ) -> None:
+        # Guards the silent skip that hid the crash: a comparison whose feature
+        # set has no columns produces no test, and the run still "succeeds".
+        planned = comparison_config().model.tiers.primary_comparisons
+        assert len(corrected_run.tests) == len(planned)
+        assert not any("could not be run" in note for note in corrected_run.notes)
+
+    def test_each_test_carries_an_adjusted_p_value(self, corrected_run: stage.ModelResult) -> None:
+        for test in corrected_run.tests:
+            assert test.comparison.p_adjusted is not None
+
+    def test_the_adjustment_never_lowers_a_p_value(self, corrected_run: stage.ModelResult) -> None:
+        for test in corrected_run.tests:
+            assert test.comparison.p_adjusted is not None
+            assert test.comparison.p_adjusted >= test.comparison.p_value
+
+    def test_the_raw_and_adjusted_values_both_reach_the_file(
+        self, corrected_run: stage.ModelResult
+    ) -> None:
+        frame = pd.read_csv(corrected_run.comparisons_path)
+        assert frame["p_value"].notna().all()
+        assert frame["p_holm"].notna().all()
+
+    def test_the_summary_reports_the_corrected_tests(
+        self, corrected_run: stage.ModelResult
+    ) -> None:
+        text = "\n".join(stage.summarise(corrected_run))
+        assert "confirmatory tests:" in text
+        assert "p(Holm)" in text
+
+    def test_the_markdown_summary_shows_the_corrected_table(
+        self, corrected_run: stage.ModelResult
+    ) -> None:
+        summary = corrected_run.summary_path.read_text()
+        assert "p (Holm)" in summary
+        for test in corrected_run.tests:
+            assert test.name in summary
+
+
+@pytest.mark.slow
+class TestCorrectionCanBeTurnedOff:
+    def test_without_correction_the_tests_still_run(self, tmp_path: Path, roots: DataRoots) -> None:
+        features_path, labels_path = comparable_inputs(tmp_path)
+        result = stage.run(
+            comparison_config(**{"model.tiers.multiplicity_correction": "none"}),
+            roots,
+            features_path=features_path,
+            labels_path=labels_path,
+        )
+        assert result.tests
+        for test in result.tests:
+            assert test.comparison.p_adjusted is None
+        assert pd.read_csv(result.comparisons_path)["p_value"].notna().all()

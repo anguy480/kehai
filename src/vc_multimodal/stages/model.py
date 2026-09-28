@@ -23,7 +23,7 @@ Consequences that shape the code:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
@@ -690,19 +690,13 @@ def _confirmatory_tests(
             )
 
     if collected and tiers.multiplicity_correction == "holm":
+        # `replace` rather than rebuilding from __dict__: these are slotted
+        # dataclasses and have no __dict__ at all, which crashed here after
+        # every estimate had been computed - the most expensive possible place
+        # to fail, and it produced no confirmatory output whatsoever.
         adjusted = holm_adjust([test.comparison.p_value for test in collected])
         collected = [
-            ConfirmatoryTest(
-                **{
-                    **test.__dict__,
-                    "comparison": Comparison(
-                        n=test.comparison.n,
-                        median_difference=test.comparison.median_difference,
-                        p_value=test.comparison.p_value,
-                        p_adjusted=value,
-                    ),
-                }
-            )
+            replace(test, comparison=replace(test.comparison, p_adjusted=value))
             for test, value in zip(collected, adjusted, strict=True)
         ]
     return sorted(collected, key=lambda test: (test.name, test.target))

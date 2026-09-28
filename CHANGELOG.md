@@ -8,6 +8,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `vc model` crashed in the multiplicity correction, after every estimate had
+  been computed: it rebuilt a frozen slotted dataclass from `test.__dict__`,
+  which such a class does not have. The most expensive possible place to fail,
+  and it meant no confirmatory output at all - the whole point of the run.
+  Rebuilt with `dataclasses.replace`. No test reached the correction, because
+  every fixture left the `text` feature set with no columns, so no comparison
+  was built, the collection stayed empty and the correction never ran; the new
+  end-to-end test supplies text columns and is verified to fail against the old
+  code with the original error.
+
 - Every stage that writes a per-session table overwrote it instead of merging,
   so a run over a subset deleted the rows for every session it did not touch.
   Nothing failed while it happened: `vc --force --sessions 130 face` reported
