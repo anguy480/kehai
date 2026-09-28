@@ -32,7 +32,12 @@ from vc_multimodal.faces import (
 )
 from vc_multimodal.features.face_math import FrameMeasure, head_pose_from_matrix
 from vc_multimodal.features.sampling import resolve_sampling
-from vc_multimodal.handoff_text import FACE_BACKEND_NOTE, GAZE_ABSENCE_NOTE, notes
+from vc_multimodal.handoff_text import (
+    FACE_BACKEND_NOTE,
+    GAZE_ABSENCE_NOTE,
+    REMOTE_RECORDING_NOTE,
+    notes,
+)
 from vc_multimodal.io_utils import read_parquet
 from vc_multimodal.paths import DataRoots, RawSession
 from vc_multimodal.stages import face as stage
@@ -1040,3 +1045,44 @@ def test_the_summary_counts_rates_over_measured_sessions_only(default_config: Ap
     lines = "\n".join(stage.summarise(frame, default_config))
     assert "2 of 2 measured session(s)" in lines
     assert "1 session(s) not measured" in lines
+
+
+# ---------------------------------------------------------------------------
+# the remote-recording note
+# ---------------------------------------------------------------------------
+def flowed(text: str) -> str:
+    """Prose with its line breaks collapsed.
+
+    A note is wrapped for reading, and rewrapping it when a sentence is edited
+    must not break a test about what it says.
+    """
+    return " ".join(text.split())
+
+
+def test_the_remote_recording_note_blames_the_recording_not_the_participant():
+    assert "nothing to do with the participants themselves" in flowed(REMOTE_RECORDING_NOTE)
+
+
+def test_the_remote_recording_note_names_the_column_to_check():
+    assert "qc__face_dropped_fraction" in flowed(REMOTE_RECORDING_NOTE)
+
+
+def test_the_remote_recording_note_names_the_lab_study_and_what_it_had():
+    """The comparison a reviewer reaches for, and why it does not hold."""
+    note = flowed(REMOTE_RECORDING_NOTE)
+    assert "Miyamoto et al. 2025" in note
+    assert "Acta Psychologica 254:104782" in note
+    assert "controlled lighting" in note
+    assert "eye tracker" in note
+
+
+def test_the_remote_recording_note_keeps_the_alternative_explanation_live():
+    assert "cannot be ruled out" in flowed(REMOTE_RECORDING_NOTE)
+
+
+def test_the_remote_recording_note_forbids_modelling_tracking_quality():
+    assert "must not be modelled as one" in flowed(REMOTE_RECORDING_NOTE)
+
+
+def test_every_note_is_carried_into_the_bundle():
+    assert notes() == (FACE_BACKEND_NOTE, GAZE_ABSENCE_NOTE, REMOTE_RECORDING_NOTE)

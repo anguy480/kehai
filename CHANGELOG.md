@@ -150,6 +150,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The handoff README shows where each session sits on facial tracking quality:
+  the distribution of `qc__face_dropped_fraction` across the cohort, the sessions
+  well clear of the rest named individually with their confirmed cause, and a
+  pointer to the QC report so any session can be looked up rather than inferred
+  from a summary. A new `qc__face_dropped_fraction` column carries the value that
+  the face stage already flagged on, so the number that explains a session's
+  facial features travels with them.
+- A limitation note stating that face tracking quality varies with the
+  participant's own home setup - lighting, focus, camera distance, framing - and
+  that this is a known cost of remote recording which makes the facial results not
+  directly comparable with Miyamoto et al. 2025, whose lab conditions included
+  controlled lighting, a fixed camera and an eye tracker. Where a facial result
+  here is weaker than the equivalent there, recording conditions are a live
+  explanation that cannot be ruled out.
+
 - `vc qc-note` records a finding a person confirmed by watching a recording, so
   it travels with the data instead of living in their head. The pipeline can say
   that a session produced almost no usable faces; it cannot say whether the crop

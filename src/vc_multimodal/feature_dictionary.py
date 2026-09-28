@@ -229,6 +229,14 @@ QC_DESCRIPTIONS: Final[dict[str, tuple[str, str]]] = {
         "ratio",
         "Fraction of the listening window in which a face was found and measured.",
     ),
+    "qc__face_dropped_fraction": (
+        "ratio",
+        "Share of sampled frames in which no usable face was found, over the whole "
+        "session. Information about the RECORDING, not about the participant: these "
+        "are people in their own homes on their own equipment, so lighting, focus "
+        "and camera distance vary and are not controllable. Not a behavioural "
+        "measure and must not be modelled as one. See the README.",
+    ),
     "qc__annotations": (
         "list",
         "Findings a person confirmed by watching the recording, as "

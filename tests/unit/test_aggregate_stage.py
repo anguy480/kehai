@@ -734,3 +734,51 @@ class TestConfirmedNotesAreApplied:
         assert BLUR in text
         assert "2 feature(s) withheld" in text
         assert "other modalities are unaffected" in text
+
+
+class TestTrackingQualityIsRecordedIndependently:
+    def test_the_dropped_fraction_matches_the_face_stage_definition(self) -> None:
+        frames = pd.DataFrame({"detected": [True, True, False, False]})
+        assert stage.session_dropped_fraction(frames) == pytest.approx(0.5)
+
+    def test_no_frames_is_not_zero_dropped(self) -> None:
+        # A session with nothing measured is a different problem from one where
+        # everything failed, and must not read as perfect tracking.
+        assert stage.session_dropped_fraction(pd.DataFrame({"detected": []})) is None
+        assert stage.session_dropped_fraction(pd.DataFrame()) is None
+
+    def test_every_frame_dropped_is_one_not_none(self) -> None:
+        frames = pd.DataFrame({"detected": [False, False]})
+        assert stage.session_dropped_fraction(frames) == pytest.approx(1.0)
+
+    def test_it_is_recorded_without_the_turns_timeline(
+        self, roots: DataRoots, default_config: AppConfig
+    ) -> None:
+        """Tracking quality is a property of the facial measurement alone.
+
+        Tying it to the timeline left it blank for any session whose turn stage
+        had not run - blank for a reason that has nothing to do with the camera,
+        in the one column that explains the camera.
+        """
+        place_fake_media(roots.data, WINTER_FOLDER, [28])
+        frames = pd.DataFrame(
+            {
+                "session_id": [28] * 4,
+                "frame_index": [0, 5, 10, 15],
+                "timestamp_s": [0.0, 0.2, 0.4, 0.6],
+                "detected": [True, False, False, False],
+                "confidence": [0.9, 0.0, 0.0, 0.0],
+            }
+        )
+        for key in default_config.face.unit_keys:
+            frames[key] = 0.1
+        for column in ("jaw", "blink", "head_pitch", "head_yaw", "head_roll"):
+            frames[column] = 0.0
+        write_parquet(face_stage.face_path(roots, 28), frames)
+
+        result = stage.run(default_config, roots, session_ids=[28])
+
+        row = result.frame.iloc[0]
+        assert row["qc__face_dropped_fraction"] == pytest.approx(0.75)
+        # The timeline really is missing, and that is reported separately.
+        assert "turns" in str(row["qc__stages_missing"])

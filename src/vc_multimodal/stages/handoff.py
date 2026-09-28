@@ -226,11 +226,94 @@ def _manifest(
     return record
 
 
+#: Where a session's tracking quality is unusual enough to name individually.
+_DROPPED_NOTABLE: Final = 0.05
+
+
+def _dropped_frame_section(qc: pd.DataFrame) -> str:
+    """Where each session sits on facial tracking quality.
+
+    A distribution rather than a pass/fail line, because there is no principled
+    cutoff: the cohort runs from a fraction of a percent to almost everything,
+    and where to draw a line is the analyst's decision. What they need is to see
+    the shape and be able to look any session up.
+    """
+    column = "qc__face_dropped_fraction"
+    if column not in qc.columns:
+        return ""
+    values = pd.to_numeric(qc[column], errors="coerce").dropna()
+    if values.empty:
+        return (
+            "### Face tracking quality\n\n"
+            "No session in this bundle has a facial dropped-frame fraction "
+            "recorded, so nothing here describes tracking quality.\n"
+        )
+
+    measured = len(values)
+    unmeasured = len(qc) - measured
+    lines = [
+        "### Face tracking quality, session by session",
+        "",
+        f"`qc__face_dropped_fraction` is the share of sampled frames in which no "
+        f"usable face was found. Measured for {measured} session(s)"
+        + (f"; {unmeasured} session(s) have no facial measurements at all." if unmeasured else "."),
+        "",
+        "| | dropped frames |",
+        "| --- | --- |",
+        f"| best | {values.min():.1%} |",
+        f"| 25th percentile | {values.quantile(0.25):.1%} |",
+        f"| median | {values.median():.1%} |",
+        f"| 75th percentile | {values.quantile(0.75):.1%} |",
+        f"| worst | {values.max():.1%} |",
+    ]
+
+    notable = qc.loc[
+        pd.to_numeric(qc[column], errors="coerce") > _DROPPED_NOTABLE,
+        ["session_id", column],
+    ].sort_values(column, ascending=False)
+    if not notable.empty:
+        lines.extend(
+            [
+                "",
+                f"Sessions above {_DROPPED_NOTABLE:.0%}, which is well clear of the "
+                f"rest of the cohort:",
+                "",
+                "| session | dropped frames | confirmed cause |",
+                "| --- | --- | --- |",
+            ]
+        )
+        reasons = (
+            qc.set_index("session_id")["qc__annotation_reason"]
+            if "qc__annotation_reason" in qc.columns
+            else pd.Series(dtype="object")
+        )
+        for session_id, value in notable.itertuples(index=False):
+            # An absent reason arrives as NaN from a CSV round-trip, and
+            # str(nan) is "nan", which would print as this session's confirmed
+            # cause. Check for absence before converting.
+            raw = reasons.get(int(session_id))
+            reason = "" if raw is None or pd.isna(raw) else str(raw).strip()
+            lines.append(f"| {int(session_id)} | {float(value):.1%} | {reason or 'not checked'} |")
+    else:
+        lines.extend(["", f"No session is above {_DROPPED_NOTABLE:.0%}."])
+
+    lines.extend(
+        [
+            "",
+            f"Every session's value is in `{QC_FILE}`, so any of them can be looked "
+            f"up rather than inferred from this summary.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _readme(
     config: AppConfig,
     *,
     result_files: Sequence[str],
     features: pd.DataFrame,
+    qc: pd.DataFrame,
     feature_columns: Sequence[str],
     text: TextFeatures | None,
     git: GitState | None,
@@ -310,6 +393,8 @@ marked in `{DICTIONARY_FILE}`. The other features are exploratory: report them
 as such, with the number of comparisons stated.
 """,
     ]
+
+    parts.append(_dropped_frame_section(qc))
 
     parts.append(
         """### Quality columns are not predictors
@@ -599,6 +684,7 @@ def run(
                 config,
                 result_files=manifest["files"],
                 features=features,
+                qc=qc,
                 feature_columns=feature_columns,
                 text=text,
                 git=git,

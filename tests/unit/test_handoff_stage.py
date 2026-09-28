@@ -62,8 +62,12 @@ def feature_table(
         "prosody__f0_semitone_sd": [2.5 + i for i in range(n)],
         "face_speaking__au12_mean": [0.1] * n,
     }
+    # Which QC columns are text comes from the stage, not a copy of the list:
+    # an earlier version hardcoded it here and silently gave new text columns a
+    # float value, which made a test about README prose fail for no visible
+    # reason.
     for name in aggregate_stage.QC_COLUMNS:
-        if name in {"qc__stages_missing", "qc__role_source", "qc__face_backend", "qc__flags"}:
+        if name in aggregate_stage._STRING_QC:
             columns[name] = ["mediapipe" if name == "qc__face_backend" else ""] * n
         else:
             columns[name] = [10.0] * n
@@ -585,3 +589,111 @@ class TestConfirmedNotesTravelWithTheBundle:
         )
         with pytest.raises(QcNoteError, match="modality"):
             build(default_config, roots, repo)
+
+
+# ---------------------------------------------------------------------------
+# face tracking quality in the README
+# ---------------------------------------------------------------------------
+def features_with_dropped(default_config: AppConfig, dropped: list[float | None]) -> pd.DataFrame:
+    """A feature table carrying a dropped-frame fraction per session."""
+    frame = feature_table(default_config, list(range(1, len(dropped) + 1)))
+    frame["qc__face_dropped_fraction"] = dropped
+    return frame
+
+
+class TestTheTrackingQualitySection:
+    def readme(self, default_config: AppConfig, roots: DataRoots, repo: Path) -> str:
+        return (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
+
+    def test_the_distribution_is_reported(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, features_with_dropped(default_config, [0.001, 0.002, 0.324]))
+        text = self.readme(default_config, roots, repo)
+        assert "Face tracking quality, session by session" in text
+        assert "median" in text
+        assert "| worst | 32.4% |" in text
+
+    def test_an_unusual_session_is_named_with_its_value(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        # So the professor can see where each session sits rather than being
+        # given a summary and asked to trust it.
+        write_features(roots, features_with_dropped(default_config, [0.001, 0.002, 0.992]))
+        text = self.readme(default_config, roots, repo)
+        assert "| 3 | 99.2% |" in text
+
+    def test_an_unusual_session_shows_its_confirmed_cause(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        frame = features_with_dropped(default_config, [0.001, 0.002, 0.992])
+        frame.loc[frame["session_id"] == 3, "qc__annotation_reason"] = BLUR_NOTE
+        write_features(roots, frame)
+        text = self.readme(default_config, roots, repo)
+        assert BLUR_NOTE in text
+
+    def test_an_unchecked_outlier_says_so_rather_than_looking_explained(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, features_with_dropped(default_config, [0.001, 0.002, 0.992]))
+        text = self.readme(default_config, roots, repo)
+        assert "not checked" in text
+
+    def test_a_clean_cohort_says_there_are_no_outliers(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, features_with_dropped(default_config, [0.001, 0.002, 0.003]))
+        assert "No session is above 5%" in self.readme(default_config, roots, repo)
+
+    def test_sessions_with_no_facial_measurement_are_counted_separately(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        # Absent is not zero dropped, and must not be averaged in as if it were.
+        write_features(roots, features_with_dropped(default_config, [0.001, 0.002, None]))
+        text = self.readme(default_config, roots, repo)
+        assert "Measured for 2 session(s)" in text
+        assert "1 session(s) have no facial measurements" in text
+
+    def test_no_values_at_all_is_stated_not_faked(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, features_with_dropped(default_config, [None, None, None]))
+        text = self.readme(default_config, roots, repo)
+        assert "No session in this bundle has a facial dropped-frame fraction" in text
+
+    def test_the_reader_is_told_where_to_look_up_a_session(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, features_with_dropped(default_config, [0.001, 0.002, 0.324]))
+        assert handoff_stage.QC_FILE in self.readme(default_config, roots, repo)
+
+
+class TestTheRemoteRecordingLimitation:
+    def test_the_readme_carries_it(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, feature_table(default_config))
+        text = (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
+        assert "varies with the participant's own setup" in text
+
+    def test_it_names_the_lab_study_it_is_not_comparable_with(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, feature_table(default_config))
+        text = (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
+        assert "Miyamoto" in text
+        assert "controlled lighting" in text
+
+    def test_it_says_the_quality_measure_is_not_behavioural(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, feature_table(default_config))
+        text = (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
+        assert "not a behavioural measure" in text
+
+    def test_it_says_a_threshold_must_be_chosen_once(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, feature_table(default_config))
+        text = (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
+        assert "decide the threshold once" in text

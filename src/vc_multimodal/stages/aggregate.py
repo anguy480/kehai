@@ -87,6 +87,7 @@ QC_COLUMNS: Final = (
     "qc__face_frames_listening",
     "qc__face_measured_speaking",
     "qc__face_measured_listening",
+    "qc__face_dropped_fraction",
     "qc__annotations",
     "qc__annotation_reason",
     "qc__flags",
@@ -157,6 +158,26 @@ class WindowSummary:
     frames_listening: int = 0
     measured_speaking: float | None = None
     measured_listening: float | None = None
+
+
+def session_dropped_fraction(frames: pd.DataFrame) -> float | None:
+    """Share of this session's sampled frames with no usable face.
+
+    The same definition the face stage flags on, carried into the feature table
+    so the number that explains a session's facial features travels with them.
+    It is session-level rather than per-window on purpose: a camera problem does
+    not respect who is talking, and the per-window coverage columns already say
+    how much of each window was measured.
+
+    None for a session with no frames at all, which is a different problem from
+    every frame being unusable and must not read as 0% dropped.
+    """
+    if frames.empty or "detected" not in frames.columns:
+        return None
+    detected = frames["detected"].astype("boolean")
+    if detected.isna().all():
+        return None
+    return float(1.0 - detected.fillna(value=False).mean())
 
 
 def summarise_face(
@@ -302,6 +323,7 @@ def build_frame(rows: Sequence[Mapping[str, object]], columns: Sequence[str]) ->
         "qc__listening_seconds",
         "qc__face_measured_speaking",
         "qc__face_measured_listening",
+        "qc__face_dropped_fraction",
     ):
         frame[column] = pd.to_numeric(frame[column], errors="coerce").astype("float64")
     return frame.sort_values("session_id", ignore_index=True)
@@ -364,6 +386,14 @@ def _session_row(
     timeline_file = turns_stage.timeline_path(roots, session.session_id)
     windows = WindowSummary()
 
+    # Tracking quality is a property of the facial measurement alone, so it is
+    # recorded whenever that exists. The windowed features additionally need the
+    # speaking/listening timeline, and a session missing only that would
+    # otherwise have no dropped-frame fraction either - blank for a reason that
+    # has nothing to do with the camera, in the one column that explains the
+    # camera.
+    dropped = session_dropped_fraction(read_parquet(face_file)) if face_file.exists() else None
+
     if not face_file.exists() or not timeline_file.exists():
         if not face_file.exists():
             stages_missing.append("face")
@@ -395,6 +425,7 @@ def _session_row(
             "qc__face_frames_listening": windows.frames_listening,
             "qc__face_measured_speaking": windows.measured_speaking,
             "qc__face_measured_listening": windows.measured_listening,
+            "qc__face_dropped_fraction": dropped,
             "qc__flags": ";".join(dict.fromkeys(flags)),
         }
     )
