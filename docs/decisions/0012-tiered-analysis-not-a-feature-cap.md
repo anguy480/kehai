@@ -160,3 +160,88 @@ The general lesson is automated rather than remembered: `vc aggregate` now
 detects any feature with no variance across sessions and escalates in its
 summary when that feature holds a confirmatory slot. This class of problem is
 now caught by the pipeline instead of noticed by a reader.
+
+## Amendment, 2026-09-29: the confirmatory tier was unreachable
+
+This ADR describes a confirmatory tier of twelve pre-registered features and
+four corrected tests. The implementation did not produce it, and a smoke run on
+the real feature table with randomly generated labels is what revealed it.
+
+A feature set was treated as confirmatory only if **all** of its columns were
+among the pre-registered twelve. No set can satisfy that: `all` carries 54
+columns, `audio` 24, and the text baseline's columns are not pre-registered
+features at all. So the condition never held, and three things followed.
+
+* Every one of the 32 estimates was tiered exploratory.
+* The permutation null is gated on the confirmatory tier, so `n_permutations:
+  1000` was silently ignored for the whole run. No null was ever computed.
+* The four reported "confirmatory tests" compared the **full** feature sets -
+  54 features against 20 - rather than the pre-registered set. The headline
+  tests were the exploratory analysis wearing the confirmatory label.
+
+Nothing was lost: the run used random labels, and no questionnaire score has
+been seen by anyone on the extraction side. That is also what makes fixing it
+legitimate now rather than post hoc, and it is precisely the window this ADR
+exists to protect. It closes the first time the analysis is run against real
+outcomes.
+
+### Who chose this, and what is still open
+
+**This choice was made by the assistant implementing the fix, not by the
+project's owner.** It is recorded that way because this ADR requires a change to
+the confirmatory tier to be visible and attributed, and an unattributed change is
+exactly what it is written to prevent. Three options were drafted and one was
+taken; the record should not imply that anyone else weighed them.
+
+The reasoning for the option taken:
+
+* The bug had to be fixed either way. Leaving the tier unreachable meant the
+  headline tests were the exploratory analysis under a confirmatory label, which
+  is worse than any of the alternatives.
+* Restricting our own families to their pre-registered features is what this ADR
+  already says the confirmatory tier is, so that part restores the stated design
+  rather than choosing a new one.
+* The text baseline entering whole is the genuinely new judgement. The
+  alternative - pre-registering a subset of the manuscript's text features -
+  would mean selecting the baseline we are measured against, on no prior basis,
+  which is a larger liberty than the asymmetry it would remove.
+* A third option, accepting full feature sets as confirmatory and amending this
+  ADR to match, was rejected because 54 features on 62 sessions is the regime
+  this ADR exists to avoid.
+
+**This remains open for the project owner to overrule.** No questionnaire score
+has been seen by anyone on the extraction side, so the choice can still be
+changed without becoming post hoc - and that is the only reason it was safe to
+implement before being reviewed. The window closes the first time the analysis
+runs against real outcomes, and if the decision is to be revisited it should be
+revisited before then.
+
+### What a confirmatory comparison uses
+
+A set named in a pre-registered comparison is now evaluated **twice**:
+confirmatory on its pre-registered columns, and exploratory on all of them. Both
+are wanted, and computing them separately is what stops one becoming the other.
+
+Per family, the confirmatory variant keeps the pre-registered features where
+that family has them, and the whole family where it does not:
+
+| set | confirmatory | exploratory |
+| --- | --- | --- |
+| `all` | 12 | 54 |
+| `audio` | 6 | 24 |
+| `text` | 20 | (same, so evaluated once) |
+
+**The text baseline enters whole, and the asymmetry is deliberate.** We
+pre-registered a small set of features from our own families on prior
+literature. We never pre-registered a subset of the manuscript's text features,
+and choosing one now would mean selecting the baseline we are measured against,
+on no prior basis - a far worse liberty than the asymmetry.
+
+### Consequences
+
+* 40 estimates rather than 32, three of them confirmatory variants, and six
+  permutation nulls that now actually run.
+* The comparisons are keyed by tier as well as by feature set, so a
+  confirmatory test cannot pick up the exploratory variant of the same set.
+* A run in which no set reaches the confirmatory tier now says so in its notes
+  rather than reporting confirmatory tests built from exploratory estimates.

@@ -8,6 +8,24 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The confirmatory tier was unreachable, so the pre-registered analysis was not
+  the one being run. A feature set counted as confirmatory only if all its
+  columns were among the twelve pre-registered features, which no set can be: the
+  combined set has 54 and the text baseline's columns are not pre-registered
+  features at all. Every estimate was therefore exploratory, `n_permutations` was
+  silently ignored for the whole run because the null is gated on that tier, and
+  the four reported confirmatory tests compared full feature sets rather than the
+  pre-registered ones.
+
+  A named set is now evaluated twice, confirmatory on its pre-registered columns
+  and exploratory on all of them, with the comparisons keyed by tier so one cannot
+  be mistaken for the other. Per family the confirmatory variant keeps the
+  pre-registered features where they exist and the whole family where they do not,
+  which is why the text baseline enters whole: no subset of it was ever
+  pre-registered, and choosing one now would mean selecting the baseline we are
+  measured against. A run where no set reaches the confirmatory tier now says so.
+  Found by a smoke run with random labels; see `docs/decisions/0012`.
+
 - `vc model` crashed in the multiplicity correction, after every estimate had
   been computed: it rebuilt a frozen slotted dataclass from `test.__dict__`,
   which such a class does not have. The most expensive possible place to fail,

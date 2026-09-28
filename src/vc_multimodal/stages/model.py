@@ -26,7 +26,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 import numpy as np
 import pandas as pd
@@ -397,24 +397,73 @@ class ModelResult:
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
-def _tier_of(feature_set: FeatureSet, plan: TierPlan, config: AppConfig) -> str:
-    """Whether an estimate belongs to the confirmatory or exploratory tier.
+TierName = Literal["confirmatory", "exploratory"]
 
-    A feature set is confirmatory only if it is named in a pre-registered
-    comparison *and* restricted to the pre-registered features. Everything else
-    is exploratory however interesting it looks.
+TIER_CONFIRMATORY: TierName = "confirmatory"
+TIER_EXPLORATORY: TierName = "exploratory"
+
+
+@dataclass(frozen=True, slots=True)
+class Variant:
+    """One way of evaluating a feature set: which columns, in which tier."""
+
+    feature_set: str
+    tier: TierName
+    columns: tuple[str, ...]
+
+
+def confirmatory_columns(feature_set: FeatureSet, config: AppConfig) -> tuple[str, ...]:
+    """The pre-registered columns of a feature set.
+
+    Per family: where that family has pre-registered features, only those are
+    used; where it has none, the family is used whole.
+
+    The asymmetry is deliberate and it is about the text baseline. We
+    pre-registered a small set of features from our own families (three each
+    from turns, prosody and the two facial windows) on prior literature. We
+    never pre-registered a subset of the manuscript's text features, and
+    choosing one now would mean selecting the baseline we are measured against,
+    on no prior basis. So the text baseline enters a confirmatory comparison
+    whole.
+    """
+    primary = config.model.tiers.primary_features
+    collected: list[str] = []
+    for family in feature_set.families:
+        pre_registered = tuple(primary.get(family, ()))
+        if pre_registered:
+            collected.extend(name for name in pre_registered if name in feature_set.columns)
+        else:
+            collected.extend(name for name in feature_set.columns if family_of(name) == family)
+    return tuple(dict.fromkeys(collected))
+
+
+def variants_for(feature_set: FeatureSet, config: AppConfig) -> list[Variant]:
+    """How this feature set should be evaluated, in which tiers.
+
+    A set named in a pre-registered comparison is evaluated twice: confirmatory
+    on its pre-registered columns, and exploratory on all of them. Both are
+    wanted - the first is the result, the second is the fuller picture reported
+    without confirmatory claims - and computing them separately is what keeps
+    the confirmatory tests from quietly becoming the exploratory ones.
+
+    Where the two column sets are identical, as they are for the text baseline,
+    one estimate serves and is reported as confirmatory.
     """
     named = {
         name for comparison in config.model.tiers.primary_comparisons for name in comparison.against
     }
     if feature_set.name not in named:
-        return "exploratory"
-    return "confirmatory" if set(feature_set.columns) <= set(plan.primary) else "exploratory"
+        return [Variant(feature_set.name, TIER_EXPLORATORY, feature_set.columns)]
 
-
-def _primary_columns_only(feature_set: FeatureSet, plan: TierPlan) -> tuple[str, ...]:
-    """The confirmatory subset of a feature set's columns."""
-    return tuple(column for column in feature_set.columns if column in set(plan.primary))
+    restricted = confirmatory_columns(feature_set, config)
+    if not restricted:  # pragma: no cover - a named set with no columns is skipped
+        return [Variant(feature_set.name, TIER_EXPLORATORY, feature_set.columns)]
+    if set(restricted) == set(feature_set.columns):
+        return [Variant(feature_set.name, TIER_CONFIRMATORY, restricted)]
+    return [
+        Variant(feature_set.name, TIER_CONFIRMATORY, restricted),
+        Variant(feature_set.name, TIER_EXPLORATORY, feature_set.columns),
+    ]
 
 
 def run(
@@ -526,121 +575,166 @@ def _evaluate_everything(
     notes: list[str],
 ) -> tuple[list[Estimate], list[ConfirmatoryTest]]:
     """Every estimate, then the pre-registered comparisons over the same folds."""
-    seed = config.runtime.seed
-    tiers = config.model.tiers
-    estimates: list[Estimate] = []
+    del plan  # the tier comes from the variants, which read the config directly
 
-    # This can run for half an hour on the real cohort, mostly inside the
-    # permutation nulls, and it is run by someone who did not write it. Silence
-    # for that long is indistinguishable from a hang, so the work is counted up
-    # front and each estimate is logged as it lands.
-    usable_sets = [name for name, fs in sorted(sets.items()) if fs.is_usable]
+    # A set named in a pre-registered comparison is evaluated twice, on its
+    # pre-registered columns and on all of them, so the work is counted in
+    # variants rather than in feature sets.
+    plans = {
+        name: variants_for(feature_set, config)
+        for name, feature_set in sorted(sets.items())
+        if feature_set.is_usable
+    }
     targets = [name for name in cohort.labels.columns if name != "session_id"]
-    total = len(usable_sets) * len(targets) * len(config.model.models)
+    n_variants = sum(len(items) for items in plans.values())
+    n_confirmatory = sum(
+        1 for items in plans.values() for item in items if item.tier == TIER_CONFIRMATORY
+    )
+    total = n_variants * len(targets) * len(config.model.models)
+
+    # This runs for tens of minutes, mostly inside the permutation nulls, and it
+    # is run by someone who did not write it. Silence for that long is
+    # indistinguishable from a hang, so the work is counted up front and each
+    # estimate is logged as it lands.
     logger.info(
-        "%s: %d estimate(s) to compute: %d feature set(s) x %d target(s) x %d model(s)",
+        "%s: %d estimate(s) to compute: %d variant(s) of %d feature set(s) "
+        "(%d confirmatory) x %d target(s) x %d model(s)",
         STAGE,
         total,
-        len(usable_sets),
+        n_variants,
+        len(plans),
+        n_confirmatory,
         len(targets),
         len(config.model.models),
     )
-    done = 0
-    # Keyed by (feature set, target, model) so the comparisons can reuse the
-    # per-session errors rather than recomputing them on different folds.
-    by_key: dict[tuple[str, str, str], Evaluation] = {}
+    if n_confirmatory == 0:
+        notes.append(
+            "no feature set is evaluated in the confirmatory tier, so the "
+            "pre-registered tests cannot be the ones reported"
+        )
+        logger.warning("%s: %s", STAGE, notes[-1])
 
-    for target in cohort.labels.columns:
-        if target == "session_id":
-            continue
+    estimates: list[Estimate] = []
+    # Keyed by (feature set, tier, target, model) so the comparisons reuse the
+    # per-session errors rather than recomputing them on different folds, and so
+    # a confirmatory comparison cannot pick up the exploratory variant of the
+    # same set.
+    by_key: dict[tuple[str, str, str, str], Evaluation] = {}
+    done = 0
+
+    for target in targets:
         truth = pd.to_numeric(cohort.labels[target], errors="coerce").to_numpy(dtype=np.float64)
         if np.isnan(truth).all():
             notes.append(f"target {target!r} has no usable values and is skipped")
+            logger.warning("%s: %s", STAGE, notes[-1])
             continue
 
-        for name, feature_set in sorted(sets.items()):
-            if not feature_set.is_usable:
-                continue
-            tier = _tier_of(feature_set, plan, config)
-            columns = (
-                _primary_columns_only(feature_set, plan)
-                if tier == "confirmatory"
-                else feature_set.columns
-            )
-            if not columns:
-                continue
-            matrix = cohort.features[list(columns)].to_numpy(dtype=np.float64)
-
+        for variant in (item for items in plans.values() for item in items):
             for model in config.model.models:
-                try:
-                    evaluation = evaluate(
-                        matrix,
-                        truth,
-                        cohort.groups,
-                        model=model,
-                        seed=seed,
-                        stability_folds=(
-                            tiers.stability_folds if tiers.stability_cv != "none" else 0
-                        ),
-                        stability_repeats=(
-                            tiers.stability_repeats if tiers.stability_cv != "none" else 0
-                        ),
-                    )
-                except EvaluationError as exc:
-                    notes.append(f"{name} on {target} with {model} could not be evaluated: {exc}")
-                    logger.warning("%s: %s", STAGE, notes[-1])
-                    continue
-
-                permutation = None
-                if tier == "confirmatory" and model == MODEL_ELASTIC_NET:
-                    if config.model.n_permutations > 0:
-                        logger.info(
-                            "%s: %s on %s: running %d permutation(s), the slow part",
-                            STAGE,
-                            name,
-                            target,
-                            config.model.n_permutations,
-                        )
-                    permutation = permutation_baseline(
-                        matrix,
-                        truth,
-                        cohort.groups,
-                        model=model,
-                        seed=seed,
-                        n_permutations=config.model.n_permutations,
-                        folds=max(2, tiers.stability_folds),
-                    )
                 done += 1
-                logger.info(
-                    "%s: [%d/%d] %s on %s with %s: %d feature(s), LOO R2 %+.3f%s",
-                    STAGE,
-                    done,
-                    total,
-                    name,
-                    target,
-                    model,
-                    evaluation.n_features,
-                    evaluation.loo.r2,
-                    " (with permutation null)" if permutation is not None else "",
+                estimate = _evaluate_variant(
+                    variant,
+                    cohort,
+                    truth,
+                    target=target,
+                    model=model,
+                    config=config,
+                    notes=notes,
+                    position=(done, total),
                 )
-                by_key[name, target, model] = evaluation
-                estimates.append(
-                    Estimate(
-                        feature_set=name,
-                        target=target,
-                        model=model,
-                        tier=tier,
-                        evaluation=evaluation,
-                        permutation=permutation,
-                    )
-                )
+                if estimate is None:
+                    continue
+                by_key[variant.feature_set, variant.tier, target, model] = estimate.evaluation
+                estimates.append(estimate)
 
     tests = _confirmatory_tests(by_key, config, notes=notes)
     return estimates, tests
 
 
+def _evaluate_variant(
+    variant: Variant,
+    cohort: Cohort,
+    truth: np.ndarray,
+    *,
+    target: str,
+    model: str,
+    config: AppConfig,
+    notes: list[str],
+    position: tuple[int, int],
+) -> Estimate | None:
+    """Cross-validate one variant against one target with one model.
+
+    Returns None where the fit could not be made, having recorded why: one
+    feature set failing is not a reason to abandon the other thirty estimates.
+    """
+    tiers = config.model.tiers
+    seed = config.runtime.seed
+    matrix = cohort.features[list(variant.columns)].to_numpy(dtype=np.float64)
+
+    try:
+        evaluation = evaluate(
+            matrix,
+            truth,
+            cohort.groups,
+            model=model,
+            seed=seed,
+            stability_folds=tiers.stability_folds if tiers.stability_cv != "none" else 0,
+            stability_repeats=tiers.stability_repeats if tiers.stability_cv != "none" else 0,
+        )
+    except EvaluationError as exc:
+        notes.append(
+            f"{variant.feature_set} ({variant.tier}) on {target} with {model} "
+            f"could not be evaluated: {exc}"
+        )
+        logger.warning("%s: %s", STAGE, notes[-1])
+        return None
+
+    permutation = None
+    if variant.tier == TIER_CONFIRMATORY and model == MODEL_ELASTIC_NET:
+        if config.model.n_permutations > 0:
+            logger.info(
+                "%s: %s on %s: running %d permutation(s), the slow part",
+                STAGE,
+                variant.feature_set,
+                target,
+                config.model.n_permutations,
+            )
+        permutation = permutation_baseline(
+            matrix,
+            truth,
+            cohort.groups,
+            model=model,
+            seed=seed,
+            n_permutations=config.model.n_permutations,
+            folds=max(2, tiers.stability_folds),
+        )
+
+    done, total = position
+    logger.info(
+        "%s: [%d/%d] %s (%s) on %s with %s: %d feature(s), LOO R2 %+.3f%s",
+        STAGE,
+        done,
+        total,
+        variant.feature_set,
+        variant.tier,
+        target,
+        model,
+        evaluation.n_features,
+        evaluation.loo.r2,
+        " (with permutation null)" if permutation is not None else "",
+    )
+    return Estimate(
+        feature_set=variant.feature_set,
+        target=target,
+        model=model,
+        tier=variant.tier,
+        evaluation=evaluation,
+        permutation=permutation,
+    )
+
+
 def _confirmatory_tests(
-    by_key: Mapping[tuple[str, str, str], Evaluation],
+    by_key: Mapping[tuple[str, str, str, str], Evaluation],
     config: AppConfig,
     *,
     notes: list[str],
@@ -657,9 +751,11 @@ def _confirmatory_tests(
 
     for comparison in tiers.primary_comparisons:
         first_name, second_name = comparison.against
-        for target in {key[1] for key in by_key}:
-            first = by_key.get((first_name, target, primary_model))
-            second = by_key.get((second_name, target, primary_model))
+        for target in {key[2] for key in by_key}:
+            # The confirmatory variant specifically: comparing the exploratory
+            # ones would make the pre-registered test a different test.
+            first = by_key.get((first_name, TIER_CONFIRMATORY, target, primary_model))
+            second = by_key.get((second_name, TIER_CONFIRMATORY, target, primary_model))
             if first is None or second is None:
                 if first is None and second is None:
                     which = f"neither {first_name} nor {second_name}"

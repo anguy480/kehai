@@ -454,3 +454,199 @@ class TestCorrectionCanBeTurnedOff:
         for test in result.tests:
             assert test.comparison.p_adjusted is None
         assert pd.read_csv(result.comparisons_path)["p_value"].notna().all()
+
+
+# ---------------------------------------------------------------------------
+# which columns a confirmatory comparison actually uses
+#
+# The bug this covers: the confirmatory tier was unreachable. A set was called
+# confirmatory only if all its columns were among the pre-registered ones, which
+# `all` (54 columns) and `text` (no pre-registered subset at all) can never be.
+# So every estimate was exploratory, no permutation null ever ran, and the four
+# "confirmatory" tests compared full feature sets instead of the 12 features
+# ADR 0012 pre-registers.
+# ---------------------------------------------------------------------------
+def resolved(config: AppConfig, frame: pd.DataFrame, name: str) -> stage.FeatureSet:
+    return stage.resolve_feature_sets(frame, config)[name]
+
+
+#: Real feature names that are NOT pre-registered. Without some of these the
+#: fixture's families are exactly their primaries, the confirmatory restriction
+#: is a no-op, and the tests cannot tell the two tiers apart - which is the
+#: shape the real 54-feature table does not have.
+NON_PRIMARY = (
+    "turns__latency_sd",
+    "turns__pause_within_mean",
+    "prosody__hnr_db",
+    "prosody__jitter_local",
+    "face_speaking__au12_sd",
+    "face_speaking__au02_mean",
+    "face_listening__au04_mean",
+    "face_listening__au06_p90",
+)
+
+
+def full_table(n: int = 20) -> pd.DataFrame:
+    """A table shaped like the real one: primaries plus exploratory features."""
+    frame = feature_table(
+        list(range(1, n + 1)),
+        families=("turns", "prosody", "face_speaking", "face_listening"),
+    )
+    for name in (*NON_PRIMARY, "text__jaccard", "text__cosine", "text__bert"):
+        frame[name] = RNG.normal(size=n)
+    return frame
+
+
+class TestConfirmatoryColumns:
+    def test_our_families_are_cut_to_their_pre_registered_features(self) -> None:
+        config = load_config(DEFAULT_CONFIG_PATH)
+        frame = full_table()
+        feature_set = resolved(config, frame, "all")
+        restricted = stage.confirmatory_columns(feature_set, config)
+        # Only the pre-registered ones, and every one of them present.
+        primary = set(config.model.tiers.primary_columns)
+        assert set(restricted) <= primary
+        assert set(restricted) == primary & set(feature_set.columns)
+
+    def test_the_restriction_is_a_strict_reduction(self) -> None:
+        config = load_config(DEFAULT_CONFIG_PATH)
+        feature_set = resolved(config, full_table(), "all")
+        restricted = stage.confirmatory_columns(feature_set, config)
+        assert len(restricted) < len(feature_set.columns)
+
+    def test_the_text_baseline_enters_whole(self) -> None:
+        """We never pre-registered a subset of someone else's feature set.
+
+        Choosing one now would mean selecting the baseline we are measured
+        against, on no prior basis.
+        """
+        config = load_config(DEFAULT_CONFIG_PATH)
+        feature_set = resolved(config, full_table(), "text")
+        assert set(stage.confirmatory_columns(feature_set, config)) == set(feature_set.columns)
+
+    def test_a_partly_pre_registered_set_keeps_only_its_primaries(self) -> None:
+        config = load_config(DEFAULT_CONFIG_PATH)
+        feature_set = resolved(config, full_table(), "audio")
+        restricted = stage.confirmatory_columns(feature_set, config)
+        assert all(name.startswith(("turns__", "prosody__")) for name in restricted)
+        assert set(restricted) <= set(config.model.tiers.primary_columns)
+
+
+class TestVariants:
+    def test_a_named_set_is_evaluated_confirmatory_and_exploratory(self) -> None:
+        config = load_config(DEFAULT_CONFIG_PATH)
+        variants = stage.variants_for(resolved(config, full_table(), "all"), config)
+        assert [v.tier for v in variants] == ["confirmatory", "exploratory"]
+        assert len(variants[0].columns) < len(variants[1].columns)
+
+    def test_an_unnamed_set_is_exploratory_only(self) -> None:
+        config = load_config(DEFAULT_CONFIG_PATH)
+        variants = stage.variants_for(resolved(config, full_table(), "turns"), config)
+        assert [v.tier for v in variants] == ["exploratory"]
+
+    def test_a_set_whose_columns_are_all_pre_registered_is_evaluated_once(self) -> None:
+        # The text baseline: restricting it changes nothing, so one estimate
+        # serves and is reported as confirmatory.
+        config = load_config(DEFAULT_CONFIG_PATH)
+        variants = stage.variants_for(resolved(config, full_table(), "text"), config)
+        assert [v.tier for v in variants] == ["confirmatory"]
+
+    def test_the_confirmatory_tier_is_reachable_at_all(self) -> None:
+        """The regression: it never was.
+
+        Asserted against the shipped configuration, because the bug was that
+        the real plan could not produce a single confirmatory estimate.
+        """
+        config = load_config(DEFAULT_CONFIG_PATH)
+        sets = stage.resolve_feature_sets(full_table(), config)
+        tiers = [
+            variant.tier
+            for feature_set in sets.values()
+            if feature_set.is_usable
+            for variant in stage.variants_for(feature_set, config)
+        ]
+        assert "confirmatory" in tiers
+
+    def test_every_set_named_in_a_comparison_has_a_confirmatory_variant(self) -> None:
+        config = load_config(DEFAULT_CONFIG_PATH)
+        sets = stage.resolve_feature_sets(full_table(), config)
+        named = {
+            name
+            for comparison in config.model.tiers.primary_comparisons
+            for name in comparison.against
+        }
+        for name in named:
+            variants = stage.variants_for(sets[name], config)
+            assert any(v.tier == "confirmatory" for v in variants), name
+
+
+@pytest.fixture(scope="module")
+def tiered_run(tmp_path_factory: pytest.TempPathFactory) -> stage.ModelResult:
+    """One full run over a realistically shaped table, with both tiers."""
+    tmp_path = tmp_path_factory.mktemp("model_tiered")
+    frame = full_table()
+    labels = pd.DataFrame(
+        {
+            "session_id": frame["session_id"],
+            "K6": 2.0 * frame["turns__latency_median"] + RNG.normal(0, 0.5, len(frame)),
+        }
+    )
+    roots = DataRoots(data=tmp_path, work=tmp_path, out=tmp_path)
+    return stage.run(
+        comparison_config(**{"model.n_permutations": 3}),
+        roots,
+        features_path=write(tmp_path / "features.csv", frame),
+        labels_path=write(tmp_path / "labels.csv", labels),
+        out_dir=tmp_path / "out",
+    )
+
+
+@pytest.mark.slow
+class TestTheRunHonoursTheTiers:
+    def test_both_tiers_are_represented(self, tiered_run: stage.ModelResult) -> None:
+        tiers = {estimate.tier for estimate in tiered_run.estimates}
+        assert tiers == {"confirmatory", "exploratory"}
+
+    def test_the_confirmatory_estimates_use_fewer_features(
+        self, tiered_run: stage.ModelResult
+    ) -> None:
+        by_tier: dict[str, set[int]] = {}
+        for estimate in tiered_run.estimates:
+            if estimate.feature_set == "all":
+                by_tier.setdefault(estimate.tier, set()).add(estimate.evaluation.n_features)
+        assert max(by_tier["confirmatory"]) < min(by_tier["exploratory"])
+
+    def test_the_permutation_null_runs_on_the_confirmatory_variants(
+        self, tiered_run: stage.ModelResult
+    ) -> None:
+        # It is gated on the confirmatory tier, so an unreachable tier meant
+        # n_permutations was silently ignored for the whole run.
+        with_null = [e for e in tiered_run.estimates if e.permutation is not None]
+        assert with_null
+        assert all(e.tier == "confirmatory" for e in with_null)
+
+    def test_the_results_file_carries_the_permutation_columns(
+        self, tiered_run: stage.ModelResult
+    ) -> None:
+        frame = pd.read_csv(tiered_run.results_path)
+        assert "permutation_p" in frame.columns
+        assert frame["permutation_p"].notna().any()
+
+    def test_the_comparison_uses_the_confirmatory_variant(
+        self, tiered_run: stage.ModelResult
+    ) -> None:
+        """Otherwise the pre-registered test is quietly a different test."""
+        confirmatory = {
+            (e.feature_set, e.target): e.evaluation.loo.r2
+            for e in tiered_run.estimates
+            if e.tier == "confirmatory"
+        }
+        assert tiered_run.tests
+        for test in tiered_run.tests:
+            assert test.first_r2 == pytest.approx(confirmatory[test.first, test.target])
+            assert test.second_r2 == pytest.approx(confirmatory[test.second, test.target])
+
+    def test_no_note_says_the_confirmatory_tier_is_empty(
+        self, tiered_run: stage.ModelResult
+    ) -> None:
+        assert not any("confirmatory tier" in note for note in tiered_run.notes)
