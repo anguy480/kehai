@@ -47,6 +47,8 @@ from vc_multimodal.modeling.text_features import label_like_columns as label_lik
 from vc_multimodal.modeling.tiers import describe_plan, resolve_tiers
 from vc_multimodal.paths import DataRoots
 from vc_multimodal.provenance import GitState, environment_record, git_state
+from vc_multimodal.qc_notes import QcNotes
+from vc_multimodal.qc_notes import load as load_qc_notes
 from vc_multimodal.stages import aggregate as aggregate_stage
 from vc_multimodal.stages import face as face_stage
 
@@ -62,6 +64,7 @@ TEXT_FILE: Final = "text_features.csv"
 MANIFEST_FILE: Final = "manifest.json"
 README_FILE: Final = "README.md"
 CONFIG_FILE: Final = "config.snapshot.yaml"
+QC_NOTES_FILE: Final = "qc_notes.csv"
 
 #: Column-name fragments that must never appear in a bundle. Anything holding
 #: what someone said, rather than a measurement of how they said it.
@@ -195,6 +198,7 @@ def _manifest(
     feature_columns: Sequence[str],
     text: TextFeatures | None,
     backends: Sequence[str],
+    confirmed: QcNotes,
     now: datetime,
 ) -> dict[str, Any]:
     """Everything needed to know how these numbers were produced."""
@@ -217,6 +221,8 @@ def _manifest(
         "config": config.snapshot(),
     }
     record["text_features"] = text.manifest_record() if text is not None else None
+    # The notes in full, so a bundle is a snapshot of what was annotated when.
+    record["qc_notes"] = [note.row() for note in confirmed.notes]
     return record
 
 
@@ -229,6 +235,7 @@ def _readme(
     text: TextFeatures | None,
     git: GitState | None,
     tier_lines: Sequence[str],
+    confirmed: QcNotes,
     now: datetime,
 ) -> str:
     """The document the analyst actually reads."""
@@ -335,6 +342,24 @@ Both become informative unchanged if the recordings are re-diarized with a
 tool that permits overlapping speech.
 """
     )
+
+    if confirmed:
+        parts.append(
+            "### Sessions a person checked and marked unusable\n\n"
+            "Each of these was watched, and the finding recorded before any "
+            "questionnaire score was seen by anyone on the extraction side.\n\n"
+            "**A modality marked `unavailable` has its features blank in "
+            f"`{FEATURES_FILE}` on purpose.** They were measured, judged unusable and "
+            "withheld; they are not missing through a bug, and they should not be "
+            "imputed from the reason given here. Every other modality for these "
+            "sessions is unaffected and should be used normally.\n\n"
+            "| session | modality | status | reason | confirmed by | date |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            + "\n".join(confirmed.markdown_rows())
+            + f"\n\nThe same rows are in `{QC_NOTES_FILE}` and in "
+            f"`{MANIFEST_FILE}`, and `qc__annotations` in `{QC_FILE}` carries them "
+            "per session."
+        )
 
     parts.extend(handoff_text.notes())
 
@@ -452,6 +477,34 @@ def _prepare_target(
     return target, staging
 
 
+def _write_tables(
+    staging: Path,
+    *,
+    config: AppConfig,
+    features: pd.DataFrame,
+    qc: pd.DataFrame,
+    dictionary: pd.DataFrame,
+    text: TextFeatures | None,
+    confirmed: QcNotes,
+) -> list[str]:
+    """Write every table the bundle carries, returning what was written."""
+    written = [FEATURES_FILE, QC_FILE, DICTIONARY_FILE]
+    write_csv(staging / FEATURES_FILE, features)
+    write_csv(staging / QC_FILE, qc)
+    write_csv(staging / DICTIONARY_FILE, dictionary)
+    if text is not None:
+        write_csv(staging / TEXT_FILE, text.frame)
+        written.append(TEXT_FILE)
+    write_text(staging / CONFIG_FILE, config.to_yaml())
+    written.append(CONFIG_FILE)
+    if confirmed:
+        # The notes themselves, not only the compact QC columns: a reason is a
+        # sentence, and whoever reads a blanked modality needs it whole.
+        write_csv(staging / QC_NOTES_FILE, pd.DataFrame([note.row() for note in confirmed.notes]))
+        written.append(QC_NOTES_FILE)
+    return written
+
+
 def run(
     config: AppConfig,
     roots: DataRoots,
@@ -497,6 +550,10 @@ def run(
         raise HandoffError(str(exc)) from exc
 
     text, text_notes = _text_features(config, roots)
+    confirmed = load_qc_notes(roots.work / config.qc.notes_path)
+    if confirmed:
+        for line in confirmed.report_lines():
+            logger.info("%s: %s", STAGE, line)
     notes.extend(text_notes)
     for note in text_notes:
         logger.warning("%s: %s", STAGE, note)
@@ -511,17 +568,15 @@ def run(
 
     written: list[str] = []
     try:
-        write_csv(staging / FEATURES_FILE, features)
-        written.append(FEATURES_FILE)
-        write_csv(staging / QC_FILE, qc)
-        written.append(QC_FILE)
-        write_csv(staging / DICTIONARY_FILE, dictionary)
-        written.append(DICTIONARY_FILE)
-        if text is not None:
-            write_csv(staging / TEXT_FILE, text.frame)
-            written.append(TEXT_FILE)
-        write_text(staging / CONFIG_FILE, config.to_yaml())
-        written.append(CONFIG_FILE)
+        written = _write_tables(
+            staging,
+            config=config,
+            features=features,
+            qc=qc,
+            dictionary=dictionary,
+            text=text,
+            confirmed=confirmed,
+        )
 
         manifest = _manifest(
             config,
@@ -530,6 +585,7 @@ def run(
             feature_columns=feature_columns,
             text=text,
             backends=backends,
+            confirmed=confirmed,
             now=moment,
         )
         manifest["files"] = [*written, MANIFEST_FILE, README_FILE]
@@ -547,6 +603,7 @@ def run(
                 text=text,
                 git=git,
                 tier_lines=tier_lines,
+                confirmed=confirmed,
                 now=moment,
             ),
         )

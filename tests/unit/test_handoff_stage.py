@@ -19,8 +19,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from vc_multimodal import qc_notes
 from vc_multimodal.config import DEFAULT_CONFIG_PATH, AppConfig, load_config
 from vc_multimodal.paths import DataRoots
+from vc_multimodal.qc_notes import QcNoteError
 from vc_multimodal.stages import aggregate as aggregate_stage
 from vc_multimodal.stages import handoff as handoff_stage
 from vc_multimodal.stages.handoff import HandoffError
@@ -489,3 +491,97 @@ class TestTheSummary:
         joined = "\n".join(handoff_stage.summarise(result))
         assert result.git.short in joined
         assert "clean tree" in joined
+
+
+# ---------------------------------------------------------------------------
+# human-confirmed QC notes reaching the bundle
+# ---------------------------------------------------------------------------
+BLUR_NOTE = (
+    "participant's camera is too out of focus for face tracking; confirmed by "
+    "watching the recording"
+)
+
+
+def record_note(roots: DataRoots, session_id: int = 43, modality: str = "face") -> None:
+    qc_notes.record(
+        roots.work / "qc_notes.csv",
+        session_id=session_id,
+        modality=modality,
+        status="unavailable",
+        reason=BLUR_NOTE,
+        recorded_by="tester",
+        now=MOMENT,
+    )
+
+
+class TestConfirmedNotesTravelWithTheBundle:
+    def test_the_notes_file_is_shipped(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, feature_table(default_config))
+        record_note(roots)
+        result = build(default_config, roots, repo)
+        assert handoff_stage.QC_NOTES_FILE in result.files
+        shipped = pd.read_csv(result.path / handoff_stage.QC_NOTES_FILE)
+        assert list(shipped["session_id"]) == [43]
+        assert BLUR_NOTE in str(shipped.iloc[0]["reason"])
+
+    def test_the_readme_shows_the_session_and_the_reason(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, feature_table(default_config))
+        record_note(roots)
+        text = (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
+        assert "marked unusable" in text
+        assert "| 43 | face | unavailable |" in text
+        assert BLUR_NOTE in text
+
+    def test_the_readme_says_the_blanks_are_deliberate(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        # Otherwise the analyst reads the absence as a bug, or imputes it.
+        write_features(roots, feature_table(default_config))
+        record_note(roots)
+        text = (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
+        assert "on purpose" in text
+        assert "not missing through a bug" in text
+        assert "should not be imputed" in text
+
+    def test_the_readme_says_other_modalities_are_still_good(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, feature_table(default_config))
+        record_note(roots)
+        text = (build(default_config, roots, repo).path / handoff_stage.README_FILE).read_text()
+        assert "unaffected and should be used normally" in text
+
+    def test_the_manifest_records_the_notes_in_full(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, feature_table(default_config))
+        record_note(roots)
+        result = build(default_config, roots, repo)
+        manifest = json.loads((result.path / handoff_stage.MANIFEST_FILE).read_text())
+        assert manifest["qc_notes"][0]["session_id"] == 43
+        assert manifest["qc_notes"][0]["recorded_by"] == "tester"
+
+    def test_a_bundle_with_no_notes_says_nothing_about_them(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, feature_table(default_config))
+        result = build(default_config, roots, repo)
+        assert handoff_stage.QC_NOTES_FILE not in result.files
+        text = (result.path / handoff_stage.README_FILE).read_text()
+        assert "marked unusable" not in text
+
+    def test_a_malformed_notes_file_stops_the_bundle(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        # A finding that silently fails to travel is the thing this feature
+        # exists to prevent.
+        write_features(roots, feature_table(default_config))
+        (roots.work / "qc_notes.csv").write_text(
+            "session_id,modality,status,reason\n43,eyebrows,unavailable,too blurry to track\n"
+        )
+        with pytest.raises(QcNoteError, match="modality"):
+            build(default_config, roots, repo)

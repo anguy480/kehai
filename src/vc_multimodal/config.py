@@ -847,6 +847,19 @@ class TextFeaturesConfig(_Base):
         return self
 
 
+class QcConfig(_Base):
+    """Findings a person confirmed by looking at a recording.
+
+    Kept under `$VC_WORK_ROOT` like every other data-adjacent input, so nothing
+    written about a recording lands in the repository. Each note carries who
+    confirmed it and when, and the handoff manifest records the file's digest
+    and contents, so a bundle is an immutable snapshot of what was annotated.
+    """
+
+    # Relative to $VC_WORK_ROOT.
+    notes_path: str
+
+
 class ModelConfig(_Base):
     """The analysis the label holder runs.
 
@@ -927,6 +940,7 @@ class AppConfig(_Base):
     face: FaceConfig
     aggregate: AggregateConfig
     handoff: HandoffConfig
+    qc: QcConfig
     model: ModelConfig
     runtime: RuntimeConfig
 

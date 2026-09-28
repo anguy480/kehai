@@ -451,6 +451,18 @@ handoff:
   bundle_dir: "handoff"            # under $VC_OUT_ROOT
   allow_dirty: false               # refuse to build from a dirty git tree
 
+# Findings a person confirmed by watching a recording, which no measurement can
+# establish on its own. A 99% dropped-frame rate looks identical whether the crop
+# is wrong, the detector is failing, or the camera is out of focus, and those call
+# for completely different responses.
+#
+# Kept under $VC_WORK_ROOT like every other data-adjacent input, so nothing
+# written about a recording lands in this repository. Record notes with
+# `vc qc-note`; each carries who confirmed it and when, and the handoff manifest
+# records the file's digest and contents so a bundle is an immutable snapshot.
+qc:
+  notes_path: "qc_notes.csv"
+
 model:
   # This dataset is documented as 62 participants across 62 sessions with
   # unique IDs, so leave-one-participant-out is leave-one-session-out.

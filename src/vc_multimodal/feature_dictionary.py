@@ -229,6 +229,20 @@ QC_DESCRIPTIONS: Final[dict[str, tuple[str, str]]] = {
         "ratio",
         "Fraction of the listening window in which a face was found and measured.",
     ),
+    "qc__annotations": (
+        "list",
+        "Findings a person confirmed by watching the recording, as "
+        "`modality=status`. A modality marked `unavailable` has its features "
+        "BLANK in this table on purpose - they were measured and judged unusable, "
+        "and the reason is in qc__annotation_reason and qc_notes.csv. The "
+        "session's other modalities are unaffected.",
+    ),
+    "qc__annotation_reason": (
+        "text",
+        "Why a person marked this session's features unusable, in their words. A "
+        "technical description of the recording, never anything about the person "
+        "in it.",
+    ),
     "qc__flags": (
         "list",
         "Quality flags raised for this session, semicolon separated. Flags are "

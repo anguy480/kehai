@@ -49,6 +49,8 @@ from vc_multimodal.io_utils import read_csv, read_parquet, write_csv
 from vc_multimodal.logging_setup import get_logger
 from vc_multimodal.modeling.tiers import describe_plan, resolve_tiers
 from vc_multimodal.paths import DataRoots, RawSession, discover_sessions, select_sessions
+from vc_multimodal.qc_notes import QcNotes, columns_for_families
+from vc_multimodal.qc_notes import load as load_qc_notes
 from vc_multimodal.runner import StageReport, run_sessions
 from vc_multimodal.session_tables import carry_forward, combine
 from vc_multimodal.stages import face as face_stage
@@ -85,10 +87,19 @@ QC_COLUMNS: Final = (
     "qc__face_frames_listening",
     "qc__face_measured_speaking",
     "qc__face_measured_listening",
+    "qc__annotations",
+    "qc__annotation_reason",
     "qc__flags",
 )
 
-_STRING_QC: Final = ("qc__stages_missing", "qc__role_source", "qc__face_backend", "qc__flags")
+_STRING_QC: Final = (
+    "qc__stages_missing",
+    "qc__role_source",
+    "qc__face_backend",
+    "qc__annotations",
+    "qc__annotation_reason",
+    "qc__flags",
+)
 _INT_QC: Final = ("qc__face_frames_speaking", "qc__face_frames_listening")
 
 
@@ -309,6 +320,9 @@ class AggregateResult:
     #: to any model, and a constant confirmatory feature is a design problem
     #: rather than a curiosity.
     constant_features: tuple[str, ...] = ()
+    #: Confirmed findings that were applied, and the columns each blanked.
+    qc_notes: QcNotes = field(default_factory=QcNotes)
+    blanked_by_note: Mapping[int, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _n_present(row: Mapping[str, object], columns: Sequence[str]) -> int:
@@ -456,6 +470,8 @@ def run(
         force=force,
     )
     frame = build_frame(combine(rows, carried), columns)
+    confirmed = load_qc_notes(roots.work / config.qc.notes_path)
+    frame, blanked = apply_qc_notes(frame, confirmed, columns)
     validate(frame, feature_schema([*columns, *QC_COLUMNS]), context=STAGE)
     _check_budget(columns, config)
 
@@ -484,7 +500,68 @@ def run(
         feature_columns=tuple(columns),
         tier_lines=tier_lines,
         constant_features=constant,
+        qc_notes=confirmed,
+        blanked_by_note=blanked,
     )
+
+
+#: Flag prefix for a session whose features a person marked unusable.
+FLAG_ANNOTATED: Final = "annotated"
+
+
+def apply_qc_notes(
+    frame: pd.DataFrame, notes: QcNotes, columns: Sequence[str]
+) -> tuple[pd.DataFrame, dict[int, tuple[str, ...]]]:
+    """Record every confirmed finding, and blank what it says not to use.
+
+    Blanking rather than dropping the session is the whole point of a note being
+    scoped to a modality: a camera too blurry to track faces says nothing about
+    the audio, so session 43 keeps its turn-taking and prosodic features and
+    loses only the facial ones.
+
+    Blanking rather than leaving the values in place matters just as much. A
+    measurement nobody should use is more dangerous than an absent one, because
+    whoever did not read the note will model it.
+
+    Returns:
+        The table, and the columns blanked per session.
+    """
+    if not notes or frame.empty:
+        return frame, {}
+
+    updated = frame.copy()
+    blanked: dict[int, tuple[str, ...]] = {}
+    for session_id in notes.sessions:
+        mask = updated["session_id"] == session_id
+        if not mask.any():
+            logger.warning(
+                "%s: a QC note names session %s, which is not in the feature table",
+                STAGE,
+                session_id,
+            )
+            continue
+
+        updated.loc[mask, "qc__annotations"] = notes.labels(session_id)
+        updated.loc[mask, "qc__annotation_reason"] = notes.reasons(session_id)
+
+        families = notes.unavailable_families(session_id)
+        affected = columns_for_families(columns, families)
+        if affected:
+            updated.loc[mask, list(affected)] = pd.NA
+            blanked[session_id] = affected
+            flags = [
+                *(str(v) for v in updated.loc[mask, "qc__flags"] if str(v)),
+                *(f"{FLAG_ANNOTATED}_{family}_unavailable" for family in families),
+            ]
+            updated.loc[mask, "qc__flags"] = ";".join(dict.fromkeys(";".join(flags).split(";")))
+            logger.info(
+                "%s: session %s: %d feature(s) blanked by a confirmed note (%s)",
+                STAGE,
+                session_id,
+                len(affected),
+                notes.labels(session_id),
+            )
+    return updated, blanked
 
 
 def constant_features(frame: pd.DataFrame, columns: Sequence[str]) -> tuple[str, ...]:
@@ -547,6 +624,24 @@ def _variance_lines(result: AggregateResult, config: AppConfig) -> list[str]:
             f"  {constant_primary} are CONFIRMATORY features. A constant confirmatory "
             f"feature wastes a pre-registered slot and needs replacing before the "
             f"analysis runs."
+        )
+    return lines
+
+
+def _annotation_lines(result: AggregateResult) -> list[str]:
+    """What the confirmed findings did to this table.
+
+    Reported every run, not only when something changes: a reader who does not
+    know a modality was withheld will read its absence as a bug.
+    """
+    if not result.qc_notes:
+        return []
+    lines = list(result.qc_notes.report_lines())
+    for session_id, columns in sorted(result.blanked_by_note.items()):
+        families = sorted({column.split("__", 1)[0] for column in columns})
+        lines.append(
+            f"  session {session_id}: {len(columns)} feature(s) withheld "
+            f"({', '.join(families)}); its other modalities are unaffected"
         )
     return lines
 
@@ -617,4 +712,9 @@ def summarise(result: AggregateResult, config: AppConfig) -> list[str]:
             + (f" {sorted(ids)}" if len(ids) <= _MAX_LISTED_SESSIONS else "")
             for name, ids in sorted(by_flag.items())
         )
+
+    annotations = _annotation_lines(result)
+    if annotations:
+        lines.append("")
+        lines.extend(annotations)
     return lines

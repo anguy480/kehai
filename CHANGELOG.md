@@ -150,6 +150,30 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `vc qc-note` records a finding a person confirmed by watching a recording, so
+  it travels with the data instead of living in their head. The pipeline can say
+  that a session produced almost no usable faces; it cannot say whether the crop
+  was wrong, the detector failed, or the camera was out of focus, and those call
+  for different responses.
+
+  A note is scoped to a modality, which is what makes it safe to act on
+  automatically: `face=unavailable` withholds that session's facial features and
+  leaves its audio features untouched, because a blurry camera says nothing about
+  the audio. Withholding rather than leaving the values in place matters too - a
+  measurement nobody should use is more dangerous than an absent one, since
+  whoever did not read the note will model it.
+
+  The finding then appears in `qc__annotations` and `qc__annotation_reason` on the
+  feature table and QC report, as `qc_notes.csv` in the handoff bundle, in a
+  README section saying the blanks are deliberate and must not be imputed, and in
+  the manifest in full, so a bundle is an immutable snapshot of what was annotated
+  and by whom. A note that cannot be parsed stops the stage rather than being
+  skipped: a finding that silently fails to travel is the thing this prevents.
+
+  Recorded for session 43, whose participant's camera is too out of focus for
+  face tracking - 99.2% of sampled frames produced no usable face, confirmed by
+  watching the recording. Its audio features are unaffected and remain in use.
+
 - `vc model` runs the analysis on the machine that holds the questionnaire
   scores: leave-one-participant-out as the primary estimate for comparability
   with the manuscript, repeated 5-fold beside it with sign disagreements

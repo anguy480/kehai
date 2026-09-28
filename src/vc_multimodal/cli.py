@@ -35,8 +35,12 @@ from vc_multimodal.paths import (
     resolve_roots,
 )
 from vc_multimodal.prosody import ProsodyError
+from vc_multimodal.qc_notes import MODALITY_FAMILIES, STATUSES, QcNoteError
+from vc_multimodal.qc_notes import load as load_qc_notes
+from vc_multimodal.qc_notes import record as record_qc_note
 from vc_multimodal.roles import RolesUnavailableError
 from vc_multimodal.runner import StageReport
+from vc_multimodal.session_tables import SessionTableError
 from vc_multimodal.stages import aggregate as aggregate_stage
 from vc_multimodal.stages import assign_speakers as assign_stage
 from vc_multimodal.stages import diarize as diarize_stage
@@ -399,7 +403,7 @@ def diarize(ctx: typer.Context) -> None:
             force=setup.force,
             tools=setup.tools,
         )
-    except (DiarizationError, ConfigError, ContractError) as exc:
+    except (DiarizationError, ConfigError, ContractError, SessionTableError) as exc:
         _fail(str(exc))
         return
 
@@ -451,7 +455,7 @@ def turns(ctx: typer.Context) -> None:
             workers=setup.workers,
             force=setup.force,
         )
-    except (RolesUnavailableError, ContractError) as exc:
+    except (RolesUnavailableError, ContractError, SessionTableError) as exc:
         _fail(str(exc))
         return
 
@@ -476,7 +480,7 @@ def prosody(ctx: typer.Context) -> None:
             workers=setup.workers,
             force=setup.force,
         )
-    except (ProsodyError, RolesUnavailableError, ContractError) as exc:
+    except (ProsodyError, RolesUnavailableError, ContractError, SessionTableError) as exc:
         _fail(str(exc))
         return
 
@@ -502,7 +506,7 @@ def face(ctx: typer.Context) -> None:
             force=setup.force,
             tools=setup.tools,
         )
-    except (FaceError, ContractError) as exc:
+    except (FaceError, ContractError, SessionTableError) as exc:
         _fail(str(exc))
         return
 
@@ -526,7 +530,7 @@ def aggregate(ctx: typer.Context) -> None:
             setup.roots,
             session_ids=setup.session_ids,
         )
-    except (FaceError, ContractError) as exc:
+    except (FaceError, ContractError, QcNoteError, SessionTableError) as exc:
         _fail(str(exc))
         return
 
@@ -567,7 +571,7 @@ def verify_layout(
             workers=setup.workers,
             tools=setup.tools,
         )
-    except (OcrError, ContractError) as exc:
+    except (OcrError, ContractError, SessionTableError) as exc:
         _fail(str(exc))
         return
 
@@ -621,7 +625,7 @@ def handoff(
             allow_dirty=allow_dirty,
             force=force or setup.force,
         )
-    except (HandoffError, ContractError) as exc:
+    except (HandoffError, ContractError, QcNoteError) as exc:
         _fail(str(exc))
         return
 
@@ -654,7 +658,7 @@ def assign_speakers(ctx: typer.Context) -> None:
             force=setup.force,
             tools=setup.tools,
         )
-    except (AssignError, EmbeddingError, ContractError) as exc:
+    except (AssignError, EmbeddingError, ContractError, SessionTableError) as exc:
         _fail(str(exc))
         return
 
@@ -718,6 +722,113 @@ def model(
     typer.echo("")
     for line in model_stage.summarise(result):
         typer.echo(line)
+
+
+@app.command(name="qc-note")
+def qc_note(
+    ctx: typer.Context,
+    session: Annotated[
+        int | None, typer.Option("--session", help="Session the finding is about.")
+    ] = None,
+    modality: Annotated[
+        str | None,
+        typer.Option(
+            "--modality",
+            help=(
+                "Which features it concerns: "
+                + ", ".join(sorted(MODALITY_FAMILIES))
+                + ". A finding about the camera says nothing about the audio."
+            ),
+        ),
+    ] = None,
+    status: Annotated[
+        str,
+        typer.Option(
+            "--status",
+            help=(
+                "unavailable withholds those features from the table; degraded and "
+                "note record the finding without changing any value."
+            ),
+        ),
+    ] = "unavailable",
+    reason: Annotated[
+        str,
+        typer.Option(
+            "--reason",
+            help=(
+                "What you confirmed and how. A technical description of the "
+                "recording, never anything about the person in it."
+            ),
+        ),
+    ] = "",
+    by: Annotated[
+        str | None,
+        typer.Option("--by", help="Who confirmed it. Defaults to your git user name."),
+    ] = None,
+    replace: Annotated[
+        bool, typer.Option("--replace", help="Change an existing note for this modality.")
+    ] = False,
+    show: Annotated[bool, typer.Option("--show", help="List the recorded notes and exit.")] = False,
+) -> None:
+    """Record a finding you confirmed by watching a recording.
+
+    The pipeline can say that a session produced almost no usable faces. It
+    cannot say whether the crop was wrong, the detector failed, or the camera
+    was out of focus, and those call for different responses. This is how the
+    answer stops living in your head: it travels with the feature table, the QC
+    report, the handoff README and the manifest.
+
+    `--status unavailable` withholds that modality's features for that session
+    and leaves every other modality alone.
+    """
+    setup = _setup(ctx, "qc-note")
+    path = setup.roots.work / setup.config.qc.notes_path
+
+    if show:
+        try:
+            existing = load_qc_notes(path)
+        except QcNoteError as exc:
+            _fail(str(exc))
+            return
+        if not existing:
+            typer.echo(f"no notes recorded in {path}")
+            return
+        for line in existing.report_lines():
+            typer.echo(line)
+        return
+
+    if session is None or modality is None:
+        _fail("recording a note needs --session and --modality; --show lists what exists")
+        return
+    if status not in STATUSES:
+        _fail(f"--status must be one of {list(STATUSES)}")
+        return
+
+    try:
+        note = record_qc_note(
+            path,
+            session_id=session,
+            modality=modality,
+            status=status,
+            reason=reason,
+            recorded_by=by,
+            replace=replace,
+        )
+    except QcNoteError as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo(f"recorded in {path}:")
+    typer.echo(
+        f"  session {note.session_id}: {note.modality} {note.status.upper()} - {note.reason}"
+    )
+    typer.echo(f"  confirmed by {note.recorded_by} on {note.recorded_on}")
+    if note.blanks_features:
+        typer.echo("")
+        typer.echo(
+            f"`vc aggregate` will now withhold the {', '.join(note.families)} feature(s) "
+            f"for session {note.session_id} and leave its other modalities alone."
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover - module entry point

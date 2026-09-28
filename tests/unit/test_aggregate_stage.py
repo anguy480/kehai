@@ -16,12 +16,14 @@ import pandas as pd
 import pytest
 
 from tests.conftest import WINTER_FOLDER, place_fake_media
-from vc_multimodal.config import AppConfig
+from vc_multimodal.config import DEFAULT_CONFIG_PATH, AppConfig, load_config
 from vc_multimodal.contracts import ContractError, feature_schema, validate
 from vc_multimodal.faces import FaceError, MediaPipeBackend
 from vc_multimodal.features.spans import Span
 from vc_multimodal.io_utils import write_parquet
 from vc_multimodal.paths import DataRoots, RawSession
+from vc_multimodal.qc_notes import QcNote, QcNotes
+from vc_multimodal.runner import StageReport
 from vc_multimodal.stages import aggregate as stage
 from vc_multimodal.stages import face as face_stage
 from vc_multimodal.stages import prosody as prosody_stage
@@ -593,3 +595,142 @@ def test_the_overlap_features_are_no_longer_confirmatory(default_config: AppConf
     assert "turns__interruption_rate" not in primary
     # And the slot went to a feature that does vary.
     assert "turns__n_per_minute" in primary
+
+
+# ---------------------------------------------------------------------------
+# human-confirmed QC notes
+# ---------------------------------------------------------------------------
+BLUR = (
+    "participant's camera is too out of focus for face tracking; confirmed by "
+    "watching the recording"
+)
+
+
+def annotated_frame() -> pd.DataFrame:
+    """A table with both modalities present for two sessions.
+
+    Built with every QC column the real table carries, so `summarise` can read
+    it as it would a real one.
+    """
+    frame = pd.DataFrame(
+        {
+            "session_id": [43, 44],
+            "wave": ["winter", "winter"],
+            "turns__latency_median": [1.5, 2.0],
+            "prosody__f0_semitone_sd": [2.5, 3.0],
+            "face_speaking__au12_mean": [0.1, 0.2],
+            "face_listening__au06_mean": [0.3, 0.4],
+        }
+    )
+    for column in stage.QC_COLUMNS:
+        if column in frame.columns:
+            continue
+        frame[column] = ["", ""] if column in stage._STRING_QC else [1.0, 1.0]
+    frame["qc__flags"] = ["face_too_many_frames_dropped", ""]
+    return frame
+
+
+def face_unavailable(session_id: int = 43) -> QcNotes:
+    return QcNotes(notes=(QcNote(session_id, "face", "unavailable", BLUR, "tester", "2026-09-28"),))
+
+
+FEATURE_COLUMNS = [
+    "turns__latency_median",
+    "prosody__f0_semitone_sd",
+    "face_speaking__au12_mean",
+    "face_listening__au06_mean",
+]
+
+
+class TestConfirmedNotesAreApplied:
+    def test_the_named_modality_is_withheld(self) -> None:
+        updated, blanked = stage.apply_qc_notes(
+            annotated_frame(), face_unavailable(), FEATURE_COLUMNS
+        )
+        row = updated.set_index("session_id").loc[43]
+        assert pd.isna(row["face_speaking__au12_mean"])
+        assert pd.isna(row["face_listening__au06_mean"])
+        assert set(blanked[43]) == {"face_speaking__au12_mean", "face_listening__au06_mean"}
+
+    def test_the_other_modalities_are_untouched(self) -> None:
+        # The whole point of scoping a note: a blurry camera says nothing about
+        # the audio, so session 43 keeps its turn-taking and prosodic features.
+        updated, _ = stage.apply_qc_notes(annotated_frame(), face_unavailable(), FEATURE_COLUMNS)
+        row = updated.set_index("session_id").loc[43]
+        assert row["turns__latency_median"] == 1.5
+        assert row["prosody__f0_semitone_sd"] == 2.5
+
+    def test_other_sessions_are_untouched(self) -> None:
+        updated, _ = stage.apply_qc_notes(annotated_frame(), face_unavailable(), FEATURE_COLUMNS)
+        row = updated.set_index("session_id").loc[44]
+        assert row["face_speaking__au12_mean"] == 0.2
+        assert row["qc__annotations"] == ""
+
+    def test_the_finding_is_recorded_on_the_row(self) -> None:
+        updated, _ = stage.apply_qc_notes(annotated_frame(), face_unavailable(), FEATURE_COLUMNS)
+        row = updated.set_index("session_id").loc[43]
+        assert row["qc__annotations"] == "face=unavailable"
+        assert BLUR in str(row["qc__annotation_reason"])
+
+    def test_a_flag_is_added_without_losing_the_existing_ones(self) -> None:
+        updated, _ = stage.apply_qc_notes(annotated_frame(), face_unavailable(), FEATURE_COLUMNS)
+        flags = str(updated.set_index("session_id").loc[43]["qc__flags"]).split(";")
+        assert "face_too_many_frames_dropped" in flags
+        assert "annotated_face_speaking_unavailable" in flags
+
+    def test_a_degraded_note_records_without_withholding(self) -> None:
+        notes = QcNotes(notes=(QcNote(43, "face", "degraded", BLUR, "tester", "2026-09-28"),))
+        updated, blanked = stage.apply_qc_notes(annotated_frame(), notes, FEATURE_COLUMNS)
+        row = updated.set_index("session_id").loc[43]
+        assert row["face_speaking__au12_mean"] == 0.1
+        assert row["qc__annotations"] == "face=degraded"
+        assert blanked == {}
+
+    def test_an_audio_note_withholds_audio_and_keeps_face(self) -> None:
+        notes = QcNotes(
+            notes=(
+                QcNote(
+                    43,
+                    "audio",
+                    "unavailable",
+                    "hum throughout, confirmed by listening",
+                    "tester",
+                    "2026-09-28",
+                ),
+            )
+        )
+        updated, _ = stage.apply_qc_notes(annotated_frame(), notes, FEATURE_COLUMNS)
+        row = updated.set_index("session_id").loc[43]
+        assert pd.isna(row["turns__latency_median"])
+        assert pd.isna(row["prosody__f0_semitone_sd"])
+        assert row["face_speaking__au12_mean"] == 0.1
+
+    def test_no_notes_leaves_the_table_alone(self) -> None:
+        original = annotated_frame()
+        updated, blanked = stage.apply_qc_notes(original, QcNotes(), FEATURE_COLUMNS)
+        assert blanked == {}
+        pd.testing.assert_frame_equal(updated, original)
+
+    def test_a_note_for_an_absent_session_is_reported_not_fatal(
+        self, package_logs: pytest.LogCaptureFixture
+    ) -> None:
+        stage.apply_qc_notes(annotated_frame(), face_unavailable(999), FEATURE_COLUMNS)
+        assert "999" in package_logs.text
+
+    def test_the_summary_says_what_was_withheld_and_why(self) -> None:
+        updated, blanked = stage.apply_qc_notes(
+            annotated_frame(), face_unavailable(), FEATURE_COLUMNS
+        )
+        result = stage.AggregateResult(
+            report=StageReport(stage=stage.STAGE),
+            frame=updated,
+            path=Path("features.csv"),
+            feature_columns=tuple(FEATURE_COLUMNS),
+            qc_notes=face_unavailable(),
+            blanked_by_note=blanked,
+        )
+        text = "\n".join(stage.summarise(result, load_config(DEFAULT_CONFIG_PATH)))
+        assert "session 43" in text
+        assert BLUR in text
+        assert "2 feature(s) withheld" in text
+        assert "other modalities are unaffected" in text
