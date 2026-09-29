@@ -434,6 +434,65 @@ def _independence_section(text: TextFeatures) -> str:
     return "\n".join(lines)
 
 
+def _confirmatory_plan_section(
+    config: AppConfig, feature_columns: Sequence[str], text: TextFeatures | None
+) -> str:
+    """What each side of each confirmatory test actually is.
+
+    Derived through the same functions the model stage uses, so the document and
+    the analysis cannot describe different tests. Naming the comparisons alone -
+    "all vs text" - invites the reading that all 54 features are on one side,
+    which is not what a confirmatory comparison uses.
+    """
+    columns = [*feature_columns, *(text.feature_columns if text is not None else ())]
+    sets = model_stage.resolve_feature_sets(pd.DataFrame(columns=columns), config)
+
+    rows: list[str] = []
+    for comparison in config.model.tiers.primary_comparisons:
+        sizes = []
+        for name in comparison.against:
+            feature_set = sets.get(name)
+            if feature_set is None or not feature_set.is_usable:
+                sizes.append(f"`{name}` (not in this bundle)")
+                continue
+            restricted = model_stage.confirmatory_columns(feature_set, config)
+            whole = len(feature_set.columns)
+            sizes.append(
+                f"`{name}`: {len(restricted)} of its {whole} feature(s)"
+                if len(restricted) != whole
+                else f"`{name}`: all {whole} feature(s)"
+            )
+        rows.append(f"| `{comparison.name}` | {sizes[0]} | {sizes[1]} |")
+
+    if not rows:
+        return ""
+
+    return (
+        """### What each confirmatory test compares
+
+A confirmatory comparison does not use every feature of the sets it names. Our
+own families are cut to the features pre-registered for them; the text baseline
+enters whole.
+
+| test | one side | against |
+| --- | --- | --- |
+"""
+        + "\n".join(rows)
+        + """
+
+**The asymmetry is deliberate and it runs against us.** We pre-registered a small
+set of features from our own families on prior literature. We never
+pre-registered a subset of the manuscript's text features, and choosing one now
+would mean deciding how strong the baseline we are measured against gets to be.
+A baseline should be the strongest version of what it stands for, so it enters
+whole, and our side of every confirmatory comparison is the smaller one.
+
+The same feature sets are also evaluated unrestricted, and those estimates are
+reported in the exploratory tier. See `docs/decisions/0012`.
+"""
+    )
+
+
 def _zero_variance_section(features: pd.DataFrame, feature_columns: Sequence[str]) -> str:
     """Which features carry no information in *this* bundle.
 
@@ -676,6 +735,7 @@ log and in the notes below.
 """
     )
 
+    parts.append(_confirmatory_plan_section(config, feature_columns, text))
     parts.append("## Tier plan as it ran\n\n```\n" + "\n".join(tier_lines) + "\n```\n")
 
     parts.append(

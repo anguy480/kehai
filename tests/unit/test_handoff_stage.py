@@ -1067,3 +1067,83 @@ class TestTheIndependenceSection:
     ) -> None:
         write_features(roots, feature_table(default_config))
         assert "independent of the outcomes" not in self.readme(default_config, roots, repo)
+
+
+# ---------------------------------------------------------------------------
+# what a confirmatory test actually compares
+#
+# The README named the comparisons ("all vs text") without saying what each side
+# is, which invites the reading that all 54 features are on one side. A
+# confirmatory comparison uses the pre-registered subset of our families and the
+# whole text baseline.
+# ---------------------------------------------------------------------------
+class TestTheConfirmatoryPlanSection:
+    def with_text(self, roots: DataRoots, n: int = 3) -> None:
+        directory = roots.work / "diarization" / "diarizations_original"
+        directory.mkdir(parents=True, exist_ok=True)
+        for session_id in range(1, n + 1):
+            (directory / f"{session_id}.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nx\n")
+        pd.DataFrame(
+            {
+                "Jaccard": [0.1] * n,
+                "Cosine": [0.2] * n,
+                "Agenda_anxiety": [0.3] * n,
+                "Agenda_depression": [0.4] * n,
+            }
+        ).to_csv(roots.work / "nlp_features.csv", index=False)
+
+    def readme(self, roots: DataRoots, repo: Path) -> str:
+        config = load_config(
+            DEFAULT_CONFIG_PATH,
+            overrides={"model.text_features.positional.expected_rows": 3},
+        )
+        write_features(roots, feature_table(config, [1, 2, 3]))
+        self.with_text(roots)
+        result = handoff_stage.run(config, roots, repo=repo, now=MOMENT)
+        return (result.path / handoff_stage.README_FILE).read_text()
+
+    def test_each_test_says_what_is_on_each_side(self, roots: DataRoots, repo: Path) -> None:
+        text = self.readme(roots, repo)
+        assert "What each confirmatory test compares" in text
+        assert "| `new_modalities_vs_text` |" in text
+        assert "| `audio_vs_text` |" in text
+
+    def test_our_side_is_shown_as_a_subset(self, roots: DataRoots, repo: Path) -> None:
+        text = self.readme(roots, repo)
+        assert "of its" in text, "the restriction should be visible as N of M"
+
+    def test_the_text_baseline_is_shown_as_whole(self, roots: DataRoots, repo: Path) -> None:
+        text = self.readme(roots, repo)
+        assert "`text`: all 4 feature(s)" in text
+
+    def test_it_states_the_asymmetry_and_its_direction(self, roots: DataRoots, repo: Path) -> None:
+        text = self.readme(roots, repo)
+        assert "runs against us" in text
+        assert "strongest version of what it stands for" in text
+
+    def test_it_says_the_unrestricted_sets_are_reported_too(
+        self, roots: DataRoots, repo: Path
+    ) -> None:
+        text = self.readme(roots, repo)
+        assert "also evaluated unrestricted" in text
+
+    def test_the_sizes_match_what_the_model_stage_would_use(
+        self, roots: DataRoots, repo: Path
+    ) -> None:
+        """The property that keeps the document and the analysis in step."""
+        config = load_config(
+            DEFAULT_CONFIG_PATH,
+            overrides={"model.text_features.positional.expected_rows": 3},
+        )
+        frame = feature_table(config, [1, 2, 3])
+        write_features(roots, frame)
+        self.with_text(roots)
+        result = handoff_stage.run(config, roots, repo=repo, now=MOMENT)
+        text = (result.path / handoff_stage.README_FILE).read_text()
+
+        columns = [c for c in frame.columns if "__" in c and not c.startswith("qc__")]
+        assert result.text is not None
+        joined = [*columns, *result.text.feature_columns]
+        sets = model_stage.resolve_feature_sets(pd.DataFrame(columns=joined), config)
+        restricted = model_stage.confirmatory_columns(sets["audio"], config)
+        assert f"{len(restricted)} of its {len(sets['audio'].columns)} feature(s)" in text
