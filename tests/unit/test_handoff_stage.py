@@ -1147,3 +1147,106 @@ class TestTheConfirmatoryPlanSection:
         sets = model_stage.resolve_feature_sets(pd.DataFrame(columns=joined), config)
         restricted = model_stage.confirmatory_columns(sets["audio"], config)
         assert f"{len(restricted)} of its {len(sets['audio'].columns)} feature(s)" in text
+
+
+# ---------------------------------------------------------------------------
+# the README as a document, not just as content
+#
+# Four faults found by reading a built bundle: a heading left with no body under
+# it, a tier block contradicting the table above it, a shipped file missing from
+# the file table, and a backtick pair split across a line break. None of them
+# would fail any assertion about what the README says.
+# ---------------------------------------------------------------------------
+def built_readme(config: AppConfig, roots: DataRoots, repo: Path) -> str:
+    write_features(roots, feature_table(config))
+    return (build(config, roots, repo).path / handoff_stage.README_FILE).read_text()
+
+
+class TestTheReadmeIsWellFormed:
+    def test_no_heading_is_left_without_a_body(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        """An edit that moves a section's body must take its heading too.
+
+        A heading followed only by a *deeper* heading is an ordinary section
+        with subsections. A heading followed by one at the same or shallower
+        level has lost its body, which is what happened when two sections were
+        rewritten and one lead-in was left behind.
+        """
+        empty: list[str] = []
+        fenced = False
+        pending: tuple[str, int] | None = None
+        for line in built_readme(default_config, roots, repo).splitlines():
+            if line.startswith("```"):
+                fenced = not fenced
+                continue
+            if fenced:
+                # Shell comments inside a code block are not headings.
+                continue
+            if line.startswith("#"):
+                level = len(line) - len(line.lstrip("#"))
+                if pending is not None and level <= pending[1]:
+                    empty.append(pending[0])
+                pending = (line, level)
+            elif line.strip():
+                pending = None
+        if pending is not None:
+            empty.append(pending[0])
+        assert empty == [], f"heading(s) with nothing under them: {empty}"
+
+    def test_every_shipped_file_is_in_the_file_table(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        write_features(roots, feature_table(default_config))
+        qc_notes.record(
+            roots.work / "qc_notes.csv",
+            session_id=43,
+            modality="face",
+            status="unavailable",
+            reason=BLUR_NOTE,
+            recorded_by="tester",
+            now=MOMENT,
+        )
+        result = build(default_config, roots, repo)
+        text = (result.path / handoff_stage.README_FILE).read_text()
+        for name in result.files:
+            if name == handoff_stage.README_FILE:
+                continue
+            assert f"| `{name}` |" in text, f"{name} ships but is not in the file table"
+
+    def test_no_file_is_listed_that_was_not_shipped(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        # No qc notes here, so the notes file must not be advertised.
+        write_features(roots, feature_table(default_config))
+        result = build(default_config, roots, repo)
+        text = (result.path / handoff_stage.README_FILE).read_text()
+        assert f"| `{handoff_stage.QC_NOTES_FILE}` |" not in text
+
+    def test_no_inline_code_span_is_split_across_lines(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        """A backtick pair broken by a wrap renders as stray marks."""
+        readme = built_readme(default_config, roots, repo)
+        for number, line in enumerate(readme.splitlines(), 1):
+            if line.startswith(("```", "| ")):
+                continue
+            assert line.count("`") % 2 == 0, f"line {number} has an unclosed backtick: {line!r}"
+
+    def test_the_tier_facts_are_stated_once(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        # The raw tier dump contradicted the table above it, having been
+        # computed over a different set of columns.
+        text = built_readme(default_config, roots, repo)
+        assert "Tier plan as it ran" not in text
+        assert text.count("confirmatory test(s)") <= 1
+
+    def test_the_test_count_comes_from_the_comparisons_and_targets(
+        self, default_config: AppConfig, roots: DataRoots, repo: Path
+    ) -> None:
+        text = built_readme(default_config, roots, repo)
+        expected = len(default_config.model.tiers.primary_comparisons) * len(
+            default_config.model.targets
+        )
+        assert f"**{expected} confirmatory test(s)**" in text

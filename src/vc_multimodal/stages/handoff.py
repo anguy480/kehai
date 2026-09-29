@@ -467,8 +467,20 @@ def _confirmatory_plan_section(
     if not rows:
         return ""
 
+    plan = resolve_tiers(columns, config.model)
+    n_tests = len(config.model.tiers.primary_comparisons) * len(config.model.targets)
+    composition = ", ".join(
+        f"{count} {source}" for source, count in plan.counted_by_source().items() if count
+    )
+
     return (
-        """### What each confirmatory test compares
+        f"""### What each confirmatory test compares
+
+**{n_tests} confirmatory test(s)**: {len(config.model.tiers.primary_comparisons)} """
+        f"""comparison(s) on {len(config.model.targets)} target(s), corrected together
+by {config.model.tiers.multiplicity_correction}. Everything else is exploratory:
+{len(plan.exploratory)} of the {plan.n_features} feature(s) described here
+({composition}), reported without confirmatory claims.
 
 A confirmatory comparison does not use every feature of the sets it names. Our
 own families are cut to the features pre-registered for them; the text baseline
@@ -576,7 +588,6 @@ def _readme(
     feature_columns: Sequence[str],
     text: TextFeatures | None,
     git: GitState | None,
-    tier_lines: Sequence[str],
     confirmed: QcNotes,
     now: datetime,
 ) -> str:
@@ -610,6 +621,12 @@ def _readme(
             "Commit, tool versions, model files, seeds, and the full resolved configuration.",
         ),
         (CONFIG_FILE, "The configuration as it ran, in readable form."),
+        (
+            QC_NOTES_FILE,
+            "Findings a person confirmed by watching a recording, with who "
+            "confirmed each and when. A session marked unavailable has those "
+            "features withheld from `features.csv` on purpose.",
+        ),
     ]
     setup_section = _setup_section(git)
     labels_section = _labels_section(config)
@@ -627,8 +644,6 @@ This bundle holds **{len(feature_columns)} session-level features for
 {len(features)} sessions**, extracted from the recordings. It holds **no
 questionnaire scores**, by design: the extraction half of this project never
 had access to them (see `docs/decisions/0001` in the repository).
-
-## What to do with it
 
 {setup_section}
 {labels_section}
@@ -653,8 +668,8 @@ as such, with the number of comparisons stated.
     parts.append(
         """### Quality columns are not predictors
 
-`qc__*` columns describe how much evidence each row rests on. `
-qc__speaking_seconds` mostly measures how long the session was;
+`qc__*` columns describe how much evidence each row rests on.
+`qc__speaking_seconds` mostly measures how long the session was, and
 `qc__face_measured_speaking` mostly measures whether the camera was pointed at
 the participant. Modelling them would produce a real-looking result about
 recording conditions. They are in a separate file for that reason.
@@ -736,7 +751,6 @@ log and in the notes below.
     )
 
     parts.append(_confirmatory_plan_section(config, feature_columns, text))
-    parts.append("## Tier plan as it ran\n\n```\n" + "\n".join(tier_lines) + "\n```\n")
 
     parts.append(
         f"""## Provenance
@@ -932,7 +946,6 @@ def run(
                 feature_columns=feature_columns,
                 text=text,
                 git=git,
-                tier_lines=tier_lines,
                 confirmed=confirmed,
                 now=moment,
             ),
