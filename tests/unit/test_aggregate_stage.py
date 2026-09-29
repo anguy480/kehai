@@ -782,3 +782,57 @@ class TestTrackingQualityIsRecordedIndependently:
         assert row["qc__face_dropped_fraction"] == pytest.approx(0.75)
         # The timeline really is missing, and that is reported separately.
         assert "turns" in str(row["qc__stages_missing"])
+
+
+# ---------------------------------------------------------------------------
+# a join must not carry stale rows
+#
+# Carrying a row forward is right for a per-session stage, where the row
+# describes artifacts that did not change. It is wrong for a join: a session
+# whose facial measurements arrive after the last aggregate would keep a blank
+# facial feature while its data sits on disk, and the table would look complete
+# while being stale.
+# ---------------------------------------------------------------------------
+@pytest.mark.slow
+def test_a_subset_run_still_refreshes_every_session(roots: DataRoots, default_config: AppConfig):
+    place_fake_media(roots.data, WINTER_FOLDER, [28, 3])
+
+    # A first pass with facial measurements for neither session.
+    first = stage.run(default_config, roots)
+    assert len(first.frame) == 2
+    assert first.frame["face_speaking__au12_mean"].isna().all()
+
+    # Session 3's facial measurements arrive afterwards.
+    frames = pd.DataFrame(
+        {
+            "session_id": [3] * 4,
+            "frame_index": [0, 5, 10, 15],
+            "timestamp_s": [0.0, 0.2, 0.4, 0.6],
+            "detected": [True, True, True, True],
+            "confidence": [0.9] * 4,
+        }
+    )
+    for key in default_config.face.unit_keys:
+        frames[key] = 0.1
+    for column in ("jaw", "blink", "head_pitch", "head_yaw", "head_roll"):
+        frames[column] = 0.0
+    write_parquet(face_stage.face_path(roots, 3), frames)
+
+    # ...and aggregate is asked for session 28 only.
+    second = stage.run(default_config, roots, session_ids=[28])
+
+    # Session 3's row must reflect what is on disk now, not what it held before.
+    assert sorted(second.frame["session_id"]) == [3, 28]
+    row = second.frame.set_index("session_id").loc[3]
+    assert pd.notna(row["qc__face_dropped_fraction"]), (
+        "session 3's row was carried from the previous run and is stale"
+    )
+
+
+@pytest.mark.slow
+def test_a_subset_run_says_it_rebuilt_everything(
+    roots: DataRoots, default_config: AppConfig, package_logs: pytest.LogCaptureFixture
+):
+    place_fake_media(roots.data, WINTER_FOLDER, [28, 3])
+    stage.run(default_config, roots, session_ids=[28])
+    assert "rebuilding all 2 discovered session(s)" in package_logs.text

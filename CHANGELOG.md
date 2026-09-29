@@ -8,6 +8,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `vc aggregate` could leave stale rows. Carrying a row forward is right for a
+  per-session stage, where the row describes artifacts that did not change, but
+  wrong for a join over several stages: `vc --sessions 3 aggregate` left every
+  other session's row untouched, so a session whose facial measurements arrived
+  after the previous aggregate kept a blank facial feature while its data sat on
+  disk. The table looked complete and was stale. Every discovered session is now
+  rebuilt whatever `--sessions` asks for - the join costs a tenth of a second
+  over the whole cohort - and `--sessions` controls only which sessions are
+  reported on.
+
 - Elastic net convergence warnings reappeared on the real feature table despite
   the bounded penalty path: 13 non-converged fits in the 54-feature exploratory
   set and 1 in the 74-feature one. ADR 0015's claim that the bound converged

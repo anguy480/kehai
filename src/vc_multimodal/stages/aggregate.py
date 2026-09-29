@@ -473,8 +473,32 @@ def run(
     )
 
     discovery = discover_sessions(roots.data, config.dataset)
-    selected, missing = select_sessions(discovery.sessions, session_ids)
+    _, missing = select_sessions(discovery.sessions, session_ids)
     notes = [f"requested session(s) not found: {sorted(missing)}"] if missing else []
+
+    # Every discovered session is rebuilt, whatever --sessions asked for.
+    #
+    # A row here is a join over several stages, not a measurement of one. Keeping
+    # a row from a previous run - which is right for a per-session stage, where
+    # the row describes artifacts that did not change - is wrong for a join:
+    # `vc --sessions 3 aggregate` would leave every other session's row as it
+    # was, so a session whose facial measurements arrived after the last
+    # aggregate would keep a blank facial feature while its data sat on disk.
+    # The table would look complete and be stale, which is the worst shape for
+    # it to be in.
+    #
+    # The join costs a tenth of a second over the whole cohort, so there is
+    # nothing to save by not doing it. `--sessions` still controls which
+    # sessions are reported on.
+    selected = discovery.sessions
+    if session_ids is not None:
+        logger.info(
+            "%s: rebuilding all %d discovered session(s); this stage joins the "
+            "other stages' outputs, so a partial rebuild could leave rows that "
+            "disagree with what is on disk",
+            STAGE,
+            len(selected),
+        )
     notes.extend(f"no feature table from `vc {name}`" for name in upstream.missing)
 
     columns = all_feature_names(config, upstream=upstream.feature_columns())
