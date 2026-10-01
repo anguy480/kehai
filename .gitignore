@@ -36,6 +36,15 @@ segments*.parquet
 *.npy
 *.npz
 
+# Questionnaire scores. They belong on the label holder's side (ADR 1) and,
+# once handed over, are kept under $VC_WORK_ROOT - never in this tree.
+*label*.csv
+*Label*.csv
+*LABEL*.csv
+demo_*.csv
+*K6*.csv
+*SRS2*.csv
+
 # Data and output trees, if ever created inside the repo by mistake
 data/
 outputs/
