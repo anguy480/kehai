@@ -201,15 +201,16 @@ class StageSetup:
     force: bool
 
 
-def _setup(ctx: typer.Context, stage: str) -> StageSetup:
+def _setup(ctx: typer.Context, stage: str, *, require_data: bool = True) -> StageSetup:
     """Resolve config, roots, logging, binaries and the session selection.
 
     Every foreseeable setup problem is turned into a one-line message and a
     distinct exit code here, so no stage ever greets the user with a traceback.
+    `require_data=False` is for stages that never read the raw recordings.
     """
     options = _options(ctx)
     try:
-        config, roots = options.load(stage)
+        config, roots = options.load(stage, require_data=require_data)
         tools = FfmpegTools.discover()
         session_ids = options.session_ids(config)
     except (ConfigError, PathError, FfmpegError, ValueError) as exc:
@@ -616,7 +617,7 @@ def handoff(
     from a modified working tree unless --allow-dirty, because the commit
     recorded in the bundle is its main provenance.
     """
-    setup = _setup(ctx, handoff_stage.STAGE)
+    setup = _setup(ctx, handoff_stage.STAGE, require_data=False)
 
     try:
         result = handoff_stage.run(
@@ -704,13 +705,40 @@ def model(
 
     No label, prediction or residual is written to any output.
     """
-    setup = _setup(ctx, model_stage.STAGE)
-    table = features or aggregate_stage.features_path(setup.roots)
+    # Not _setup: the label holder's machine has no data roots and no ffmpeg,
+    # and this stage needs neither. It reads the bundle and the labels file.
+    options = _options(ctx)
+    load_env()
+    try:
+        config = load_config(options.config_path, overlays=options.overlays)
+    except ConfigError as exc:
+        _fail(str(exc))
+        return
+    try:
+        roots: DataRoots | None = resolve_roots(require_data=False)
+    except PathError:
+        roots = None
+
+    if roots is not None:
+        table = features or aggregate_stage.features_path(roots)
+        log_root = roots.out
+    elif features is not None and out is not None:
+        table, log_root = features, out
+        typer.echo("no data roots set: text features from the bundle, log beside the results")
+    else:
+        _fail("VC_WORK_ROOT and VC_OUT_ROOT are not set, so give both --features and --out")
+        return
+    log_path = configure_logging(
+        options.log_level or config.runtime.log_level,
+        log_file=log_file_path(log_root, model_stage.STAGE),
+    )
+    if log_path is not None:
+        typer.echo(f"log: {log_path}")
 
     try:
         result = model_stage.run(
-            setup.config,
-            setup.roots,
+            config,
+            roots,
             features_path=table,
             labels_path=labels,
             out_dir=out,
@@ -781,7 +809,7 @@ def qc_note(
     `--status unavailable` withholds that modality's features for that session
     and leaves every other modality alone.
     """
-    setup = _setup(ctx, "qc-note")
+    setup = _setup(ctx, "qc-note", require_data=False)
     path = setup.roots.work / setup.config.qc.notes_path
 
     if show:

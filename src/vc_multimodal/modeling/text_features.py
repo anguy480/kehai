@@ -558,6 +558,66 @@ def load_configured(work_root: Path, config: TextFeaturesConfig) -> TextFeatures
     )
 
 
+#: The text features as a handoff bundle carries them, beside `features.csv`.
+BUNDLE_FILE: Final = "text_features.csv"
+
+
+def load_bundled(path: Path, config: TextFeaturesConfig) -> TextFeatures:
+    """Load the text features a handoff bundle carries.
+
+    This is how the label holder gets the baseline without a work root. The
+    bundle's copy is the table `load_configured` produces, written out with
+    `session_id` attached, so it joins by identifier and needs no ordering rule.
+    Its columns are already in this project's convention; the prefix comes off
+    before the usual checks so that renaming restores the same names rather
+    than `text__text__*`.
+
+    Raises:
+        TextFeatureError: on the same grounds as `load`, or if the file has no
+            identifier column.
+    """
+    try:
+        frame = pd.read_csv(path)
+    except (OSError, ValueError) as exc:
+        msg = f"could not read {path.name}: {exc}"
+        raise TextFeatureError(msg) from exc
+
+    prefix = f"{TEXT_FAMILY}__"
+    frame.columns = [str(name).strip().removeprefix(prefix) for name in frame.columns]
+
+    suspicious = label_like_columns(list(frame.columns), exempt=config.exempt_columns)
+    if suspicious:
+        msg = (
+            f"{path.name} contains column(s) that look like questionnaire outcomes "
+            f"rather than text features: {list(suspicious)}, so the file is refused."
+        )
+        raise TextFeatureError(msg)
+
+    id_column = find_id_column(list(frame.columns))
+    if id_column is None:
+        _refuse_without_identifier(path, list(frame.columns), len(frame))
+    assert id_column is not None
+
+    confirmations = [
+        Confirmation(
+            columns=tuple(entry.columns),
+            statement=" ".join(entry.statement.split()),
+            confirmed_by=entry.confirmed_by,
+            confirmed_on=entry.confirmed_on,
+        )
+        for entry in config.confirmed_predictors
+    ]
+    for entry in confirmations:
+        logger.info(
+            "%s exempted from the outcome check: %s (confirmed by %s on %s)",
+            list(entry.columns),
+            entry.statement,
+            entry.confirmed_by,
+            entry.confirmed_on,
+        )
+    return _from_identifier(path, frame, id_column, confirmations)
+
+
 # ---------------------------------------------------------------------------
 # Joining
 # ---------------------------------------------------------------------------

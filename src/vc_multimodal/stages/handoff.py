@@ -314,12 +314,25 @@ _OVERLAP_FEATURE: Final = "turns__overlap_ratio"
 _INTERRUPTION_FEATURE: Final = "turns__interruption_rate"
 
 
-def _setup_section(git: GitState | None) -> str:
-    """How to get the tool, for someone who has only ever received a bundle."""
+def _setup_section(git: GitState | None, checkout: str | None = None) -> str:
+    """How to get the tool, for someone who has only ever received a bundle.
+
+    `checkout` names a later commit to run instead of the one the bundle was
+    built from, for a README regenerated after a fix to how the command runs.
+    """
+    later = ""
     if git is not None and git.remote:
         name = git.remote.rstrip("/").rsplit("/", 1)[-1]
         clone = f"git clone {git.remote}.git\ncd {name}"
         commit = f"git checkout {git.short}   # the commit this bundle was built from"
+        if checkout is not None:
+            commit = f"git checkout {checkout}   # see the note below"
+            later = (
+                f"\nThis bundle was built from `{git.short}`. Check out `{checkout}` "
+                f"instead: its analysis\nis the same, and it adds only fixes that let "
+                f"the command below run on a machine\nwithout this project's data "
+                f"folders (`docs/analysis-log.md` in the repository).\n"
+            )
     else:
         name = "repository"
         clone = "# obtain the pipeline repository from whoever sent this bundle"
@@ -342,9 +355,11 @@ bundle runs on its own.
 #    no system Python is used and no extras are needed for the analysis.
 uv sync
 ```
-
+{later}
 Then run the analysis from the directory holding this bundle. That directory is
-not inside the repository, so first tell uv where the repository is:
+not inside the repository, so first tell uv where the repository is. Nothing
+else needs setting up: the command reads only this folder and your labels file,
+and writes its results and its log to `results/`.
 
 ```
 export UV_PROJECT=/path/to/{name}   # the repository from step 2
@@ -594,6 +609,7 @@ def _readme(
     git: GitState | None,
     confirmed: QcNotes,
     now: datetime,
+    checkout: str | None = None,
 ) -> str:
     """The document the analyst actually reads."""
     commit = git.short if git is not None else "unknown (not a git checkout)"
@@ -632,7 +648,7 @@ def _readme(
             "features withheld from `features.csv` on purpose.",
         ),
     ]
-    setup_section = _setup_section(git)
+    setup_section = _setup_section(git, checkout)
     labels_section = _labels_section(config)
     files_table = "\n".join(
         ["| File | What it is |", "| --- | --- |"]

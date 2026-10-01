@@ -45,8 +45,10 @@ from vc_multimodal.modeling.evaluate import (
     permutation_baseline,
 )
 from vc_multimodal.modeling.text_features import (
+    BUNDLE_FILE,
     TextFeatureError,
     TextFeatures,
+    load_bundled,
     load_configured,
 )
 from vc_multimodal.modeling.text_features import join as join_text
@@ -215,7 +217,7 @@ def build_cohort(
     )
 
 
-def load_groups(config: AppConfig, roots: DataRoots) -> dict[int, object]:
+def load_groups(config: AppConfig, roots: DataRoots | None) -> dict[int, object]:
     """The participant each session belongs to.
 
     With `grouping: session` a session *is* a participant, which is how this
@@ -230,6 +232,9 @@ def load_groups(config: AppConfig, roots: DataRoots) -> dict[int, object]:
     name = config.model.participant_map
     if not name:  # pragma: no cover - config validation forbids this
         msg = "model.grouping='participant_map' requires model.participant_map"
+        raise ModelError(msg)
+    if roots is None:
+        msg = f"the participant map {name!r} is read from the work root; VC_WORK_ROOT is unset"
         raise ModelError(msg)
     path = roots.work / name
     if not path.is_file():
@@ -473,9 +478,36 @@ def variants_for(feature_set: FeatureSet, config: AppConfig) -> list[Variant]:
     ]
 
 
+def _destination(out_dir: Path | None, roots: DataRoots | None) -> Path:
+    """Where results go: `--out` if given, else `$VC_OUT_ROOT/model`."""
+    if out_dir is not None:
+        return out_dir
+    if roots is None:
+        msg = "VC_OUT_ROOT is not set, so say where results go with --out"
+        raise ModelError(msg)
+    return roots.out_path("model")
+
+
+def _load_text(config: AppConfig, roots: DataRoots | None, features_path: Path) -> TextFeatures:
+    """The text baseline: from the work root here, from the bundle elsewhere.
+
+    With a work root the configured table is read exactly as before. Without
+    one - the label holder's machine - the bundle's copy beside the feature
+    table is used; it is that same table with `session_id` attached.
+    """
+    assert config.model.text_features is not None
+    if roots is not None:
+        return load_configured(roots.work, config.model.text_features)
+    bundled = features_path.parent / BUNDLE_FILE
+    if not bundled.is_file():
+        msg = f"VC_WORK_ROOT is not set and there is no {BUNDLE_FILE} beside the feature table"
+        raise TextFeatureError(msg)
+    return load_bundled(bundled, config.model.text_features)
+
+
 def run(
     config: AppConfig,
-    roots: DataRoots,
+    roots: DataRoots | None,
     *,
     features_path: Path,
     labels_path: Path,
@@ -486,7 +518,9 @@ def run(
 
     Args:
         config: Resolved configuration, which fixes the analysis.
-        roots: Data roots, for the text features and the participant map.
+        roots: Data roots, for the text features and the participant map. None
+            on the label holder's machine, which has none: the text features
+            then come from the bundle, beside `features_path`.
         features_path: The feature table from the handoff bundle.
         labels_path: The questionnaire scores. Read here and nowhere else.
         out_dir: Where results go. Defaults to `$VC_OUT_ROOT/model`.
@@ -500,7 +534,7 @@ def run(
         ModelError: if the analysis cannot be run as configured.
     """
     moment = now or datetime.now(UTC)
-    destination = out_dir or roots.out_path("model")
+    destination = _destination(out_dir, roots)
     destination.mkdir(parents=True, exist_ok=True)
 
     if not features_path.is_file():
@@ -516,7 +550,7 @@ def run(
     text: TextFeatures | None = None
     if config.model.text_features is not None:
         try:
-            text = load_configured(roots.work, config.model.text_features)
+            text = _load_text(config, roots, features_path)
             features, join_report = join_text(features, text)
             notes.extend(join_report.report_lines())
         except TextFeatureError as exc:
