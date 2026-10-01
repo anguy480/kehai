@@ -47,3 +47,5 @@ confirmatory feature list, the confirmatory tests or their correction is
 exploratory**, whatever it is called, and must be reported as a change made
 after the labels were seen. The confirmatory result is the run from
 `4d8a5a1eab8d` described above.
+
+2026-10-01, post-unblinding usability fix, no change to the analysis: `vc` finds `config/default.yaml` when run from outside the repository, and the bundle README sets `UV_PROJECT` so its command runs from the bundle folder.

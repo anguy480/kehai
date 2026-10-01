@@ -1100,6 +1100,21 @@ def set_by_dotted_path(data: dict[str, Any], dotted: str, value: Any) -> dict[st
     return result
 
 
+def _resolve_default(path: Path) -> Path:
+    """Find the default config when `vc` is run from outside the repository.
+
+    The label holder runs `vc model` from the folder holding a bundle, where the
+    relative default does not exist. In that one case the repository's own copy
+    is used: the checkout this package was installed from. A default present in
+    the current directory still wins, and an explicitly named file is never
+    redirected, so no run that resolved a config before resolves a different one.
+    """
+    if path != DEFAULT_CONFIG_PATH or path.is_file():
+        return path
+    beside_package = Path(__file__).resolve().parents[2] / DEFAULT_CONFIG_PATH
+    return beside_package if beside_package.is_file() else path
+
+
 def load_config(
     path: Path | None = None,
     *,
@@ -1123,7 +1138,7 @@ def load_config(
     Raises:
         ConfigError: if any file is missing or the merged result is invalid.
     """
-    base_path = DEFAULT_CONFIG_PATH if path is None else path
+    base_path = _resolve_default(DEFAULT_CONFIG_PATH if path is None else path)
     data = read_yaml(base_path)
     for overlay in overlays:
         data = deep_merge(data, read_yaml(overlay))

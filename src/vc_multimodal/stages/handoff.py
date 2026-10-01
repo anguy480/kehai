@@ -317,9 +317,11 @@ _INTERRUPTION_FEATURE: Final = "turns__interruption_rate"
 def _setup_section(git: GitState | None) -> str:
     """How to get the tool, for someone who has only ever received a bundle."""
     if git is not None and git.remote:
-        clone = f"git clone {git.remote}.git\ncd {git.remote.rstrip('/').rsplit('/', 1)[-1]}"
+        name = git.remote.rstrip("/").rsplit("/", 1)[-1]
+        clone = f"git clone {git.remote}.git\ncd {name}"
         commit = f"git checkout {git.short}   # the commit this bundle was built from"
     else:
+        name = "repository"
         clone = "# obtain the pipeline repository from whoever sent this bundle"
         commit = ""
 
@@ -341,9 +343,11 @@ bundle runs on its own.
 uv sync
 ```
 
-Then run the analysis from the directory holding this bundle:
+Then run the analysis from the directory holding this bundle. That directory is
+not inside the repository, so first tell uv where the repository is:
 
 ```
+export UV_PROJECT=/path/to/{name}   # the repository from step 2
 uv run vc model --features features.csv --labels <your labels file> --out results
 ```
 """
