@@ -53,3 +53,5 @@ after the labels were seen. The confirmatory result is the run from
 2026-10-01, post-unblinding usability fix, no change to the analysis: `vc model` runs with no `.env` or `VC_*` variables, reading the bundle's `text_features.csv` (joined table checked identical to the work-root one) and logging under `--out`; `handoff` and `qc-note` no longer require the data root.
 
 2026-10-02, recorded after unblinding: with the random smoke-test labels, `model_results.csv` and `model_comparisons.csv` from `4d8a5a1` (repository root, work-root text features) and from `2c777757e8b4` (clean environment, bundle text features) are byte-identical; the sent `features.csv` has SHA-256 `375a38b0c8bb138b04ed07ff6504f04a39be7df7fe9df36609d394070e750f49`, which the bundle manifest did not record.
+
+2026-10-02, designed after unblinding and exploratory only, with no confirmatory claim: LLM-rated face features on branch `exploratory/llm-face` ([design](exploratory/llm-face.md)); template descriptions rated by a pinned local model, frozen before any label was joined (scores SHA-256 `3a868788a7c9bc816b23de298729626731289708b66203672fd102722e4dddb8`).
