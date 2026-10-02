@@ -57,3 +57,5 @@ after the labels were seen. The confirmatory result is the run from
 2026-10-02, designed after unblinding and exploratory only, with no confirmatory claim: LLM-rated face features on branch `exploratory/llm-face` ([design](exploratory/llm-face.md)); template descriptions rated by a pinned local model, frozen before any label was joined (scores SHA-256 `3a868788a7c9bc816b23de298729626731289708b66203672fd102722e4dddb8`).
 
 2026-10-02, exploratory and uncorrected, no confirmatory claim: the LLM face analysis (commit `63e03da`, committed before it was run on labels) was run on 62 sessions; results in `$VC_OUT_ROOT/unblinded/20261002_llm_face_63e03da/`.
+
+2026-10-02: `63e03da` was pushed to origin at 22:36:57 JST, after the run (started 12:53:05 JST), so only its local commit timestamp (12:52:52 JST) shows that the Part B code preceded the labels; unlike Part A, it was not on GitHub beforehand.
