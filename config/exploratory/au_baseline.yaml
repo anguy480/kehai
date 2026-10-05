@@ -1,0 +1,105 @@
+# AU-only baseline: how much K6 information the action unit intensities carry
+# on their own, across feature combinations.
+#
+# EXPLORATORY. Requested by Tanaka after unblinding (2026-10-05). Every set,
+# model and null below is fixed in this file before any model sees a label, and
+# the commit that carries it is recorded in docs/analysis-log.md. No
+# multiplicity correction is applied anywhere and nothing here supports a
+# confirmatory claim. See docs/exploratory/au-baseline.md.
+#
+# Read by `python -m vc_multimodal.exploratory.au_baseline`; nothing in
+# config/default.yaml or the confirmatory analysis reads it.
+
+inputs:
+  # The features.csv sent to Tanaka in the 4d8a5a1 bundle, as recorded in
+  # docs/analysis-log.md. The analysis refuses any other file.
+  bundle_features_sha256: "375a38b0c8bb138b04ed07ff6504f04a39be7df7fe9df36609d394070e750f49"  # pragma: allowlist secret
+  # The whole-session (pooled) AU table written by the `pooled` step on
+  # 2026-10-05, frozen here before any label was joined. That run recomputed the
+  # speaking and listening windows from the same per-frame output and matched
+  # the frozen features.csv exactly (1830 values, max |difference| 1.8e-15, no
+  # missingness mismatch).
+  pooled_features_sha256: "ef17e07913557d32e07c191da9507db3f171d61601e34ea099d1b5555e681403"  # pragma: allowlist secret
+
+# Column-name prefix of each window. `pooled` is the participant's speaking and
+# listening time taken together (mutual silence excluded); it is not in the
+# feature table and is computed by the `pooled` step from the per-frame output,
+# by aggregate's rules. `speaking_and_listening` puts the speaking and listening
+# columns side by side.
+windows:
+  speaking: ["face_speaking"]
+  listening: ["face_listening"]
+  pooled: ["face_pooled"]
+  speaking_and_listening: ["face_speaking", "face_listening"]
+
+# Each AU set is crossed with every window above: 11 x 4 = 44 sets, named
+# `<set>__<window>`. Units are the five the face stage measures (ADR 13).
+au_sets:
+  - {name: "au01", units: ["au01"], stats: ["mean"]}
+  - {name: "au02", units: ["au02"], stats: ["mean"]}
+  - {name: "au04", units: ["au04"], stats: ["mean"]}
+  - {name: "au06", units: ["au06"], stats: ["mean"]}
+  - {name: "au12", units: ["au12"], stats: ["mean"]}
+  # Miyamoto et al. 2025: inner brow raiser, cheek raiser, lip corner puller.
+  - {name: "miyamoto", units: ["au01", "au06", "au12"], stats: ["mean"]}
+  - {name: "smile", units: ["au06", "au12"], stats: ["mean"]}
+  # FACS upper face (AU06 is an upper-face unit in FACS).
+  - {name: "upper_face", units: ["au01", "au02", "au04", "au06"], stats: ["mean"]}
+  # Of the five measured units only AU12 is lower face, so this set has the
+  # same columns as `au12`. It is evaluated once and reported under both names.
+  - {name: "lower_face", units: ["au12"], stats: ["mean"]}
+  - {name: "all_au_mean", units: ["au01", "au02", "au04", "au06", "au12"], stats: ["mean"]}
+  - {name: "all_au_mean_sd", units: ["au01", "au02", "au04", "au06", "au12"], stats: ["mean", "sd"]}
+
+# Reference points, outside the max-statistic family.
+references:
+  # All 30 face features of the confirmatory table (both windows: every AU's
+  # mean and sd, the p90 of AU01/06/12, head pitch and yaw sd).
+  face_all_30: {prefixes: ["face_speaking__", "face_listening__"], expected_columns: 30}
+  # The manuscript's text features, from the bundle's text_features.csv.
+  text: {prefixes: ["text__"]}
+
+# The one data-driven search, run entirely inside nested cross-validation: for
+# each outer training fold, greedy forward selection over the candidates, each
+# step scored by the out-of-fold R2 of ordinary least squares with an intercept
+# (median imputation fitted inside; scaling would not change its predictions)
+# over an inner 5-fold split of that training fold.
+# A candidate is added only while it raises the inner R2, up to max_features.
+# The outer model (elastic net or random forest, as for every other set) is then
+# fitted on the selected columns and scores the held-out fold. Least squares
+# scores the inner loop because an elastic net there would put a third level of
+# cross-validation inside every permutation.
+search:
+  name: "au_forward_selection"
+  units: ["au01", "au02", "au04", "au06", "au12"]
+  stats: ["mean"]
+  windows: ["speaking", "listening", "pooled"]
+  max_features: 5
+  inner_folds: 5
+
+evaluation:
+  targets: ["K6", "SRS2"]
+  primary_target: "K6"
+  models: ["elastic_net", "random_forest"]
+  # Leave-one-out, plus repeated 5-fold beside it, with the main run's
+  # pipelines: median imputation and scaling fitted inside every fold, the
+  # elastic net's alpha and l1 ratio chosen by its own inner 5-fold.
+  kfold_folds: 5
+  kfold_repeats: 20
+
+permutation:
+  # One shared set of label permutations for every set, model and target, so
+  # that each permutation yields one null R2 per set and the best of them is
+  # the max-statistic null. Scored under 5-fold on the split of the first
+  # k-fold repeat, as in the main run; the observed value it is compared with
+  # is computed on that same split.
+  n_permutations: 1000
+  # The family over which the best R2 is taken: every AU set above and the
+  # search, under both models. The references are not in it.
+  max_statistic_family: ["au_sets", "search"]
+
+sensitivity:
+  # The three best (set, model) pairs of the max-statistic family by K6
+  # leave-one-out R2, re-evaluated (without permutations) with the sessions
+  # passed as --exclude-session left out.
+  top_n: 3
