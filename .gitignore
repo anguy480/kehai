@@ -61,6 +61,9 @@ logs/
 *.key
 .secrets.baseline.local
 
+# Personal Claude Code notes, never shared
+CLAUDE.local.md
+
 # Python
 __pycache__/
 *.py[cod]
