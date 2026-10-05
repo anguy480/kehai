@@ -143,7 +143,10 @@ Stage documentation fills in as each lands.
 ### Piloting
 
 Never run 62 sessions first. `config/pilot.yaml` lists a small set of session
-IDs; `make pilot` runs every stage over just those.
+IDs; `make pilot` runs the stages from `doctor` to `aggregate` over just those,
+stopping at the first that fails, and refuses to run if no pilot sessions are
+listed. It leaves out `verify-layout` and `assign-speakers`, which need optional
+extras; add them with `make pilot PILOT_STAGES="..."`.
 
 ```bash
 uv run vc doctor                            # is the environment ready?
@@ -158,7 +161,7 @@ uv run vc turns                             # needs a role mapping; see below
 uv run vc prosody                           # participant prosody, same mapping
 uv run vc face                              # action units in the participant tile
 uv run vc aggregate                         # one row per session: features.csv
-make pilot                                  # every stage, pilot sessions only
+make pilot                                  # doctor..aggregate, pilot sessions only
 ```
 
 Global options (`--config`, `--overlay`, `--sessions`, `--workers`, `--force`,

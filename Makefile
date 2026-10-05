@@ -6,6 +6,10 @@
 
 UV ?= uv
 PILOT_CONFIG ?= config/pilot.yaml
+# Stages `make pilot` runs, in order. verify-layout and assign-speakers are left
+# out because they need optional extras (and assign-speakers a reference clip);
+# a hand-written roles.csv stands in for the role mapping. Override to add them.
+PILOT_STAGES ?= doctor inventory extract-audio diarize vad turns prosody face aggregate
 
 .DEFAULT_GOAL := help
 .PHONY: help setup env lint format typecheck test test-fast cov pilot clean
@@ -52,8 +56,14 @@ cov: ## Write an HTML coverage report
 	$(UV) run pytest --cov --cov-report=html
 	@echo "Open htmlcov/index.html"
 
-pilot: ## Run every stage over the sessions listed in config/pilot.yaml
-	$(UV) run vc run-all --config $(PILOT_CONFIG)
+pilot: ## Run PILOT_STAGES over the sessions listed in config/pilot.yaml
+	@$(UV) run python -c "from pathlib import Path; from vc_multimodal.config import load_config; \
+	raise SystemExit(0 if load_config(overlays=[Path('$(PILOT_CONFIG)')]).runtime.pilot_sessions \
+	else 'make pilot: no runtime.pilot_sessions in $(PILOT_CONFIG); refusing to run every session.')"
+	@set -e; for stage in $(PILOT_STAGES); do \
+		echo "==> vc $$stage"; \
+		$(UV) run vc --overlay $(PILOT_CONFIG) $$stage; \
+	done
 
 clean: ## Remove caches and build artifacts (never touches data roots)
 	rm -rf .mypy_cache .ruff_cache .pytest_cache htmlcov .coverage coverage.xml build dist

@@ -75,8 +75,9 @@ uv run vc aggregate
 uv run vc handoff
 ```
 
-`vc model` is the label holder's step: don't run it with real labels unless
-asked. `make pilot` calls `vc run-all`, which doesn't exist; don't use it.
+`make pilot` runs `doctor` to `aggregate` over `runtime.pilot_sessions` in
+`config/pilot.yaml`. `vc model` is the label holder's step: don't run it with
+real labels unless asked.
 
 Commit messages follow `type(scope): summary`, e.g. `docs(analysis-log): ...`.
 Commit or push only when asked.
