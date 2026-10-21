@@ -1,0 +1,13 @@
+# Step 3 of the tokenization rerun (docs/prereg/tokenization.md, with
+# Amendment 1): the step 2 tables it reads, refused unless their SHA-256 match.
+# Each digest is fixed in a commit of its own, pushed before step 3 is run.
+feature_tables:
+  original:
+    file: "text_features_original.csv"
+    sha256: "da984428e499df0bfd406e0139adb4329ab2aefb8bc3c0118e04e8e85b8ffd71"  # pragma: allowlist secret - a file digest, not a credential
+  new_b:
+    file: "text_features_new.csv"
+    sha256: "f5f935230493880c669dcc401126d308f663fad9815170ce5609f548fbc91c3a"  # pragma: allowlist secret - a file digest, not a credential
+  new_c:
+    file: "text_features_new_c.csv"
+    sha256: null
