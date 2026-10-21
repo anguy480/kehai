@@ -69,6 +69,13 @@ dev = [
   "types-pyyaml>=6.0",
   "pandas-stubs>=2.2",
 ]
+# The manuscript's token features (exploratory/tokenization). Pinned: the port
+# must reproduce nlp_features.csv, and a different tokenizer dictionary or MTLD
+# implementation would change it.
+text = [
+    "janome==0.5.0",
+    "lexicalrichness==0.5.1",
+]
 
 [tool.uv]
 # The development machine has a conda base environment with its own
@@ -145,7 +152,7 @@ module = [
   "parselmouth.*", "silero_vad.*", "cv2.*", "mediapipe.*",
   "pyannote.*", "joblib.*", "pandera.*", "sklearn.*", "scipy.*",
   "Quartz.*", "Vision.*", "Foundation.*", "objc.*",
-  "speechbrain.*",
+  "speechbrain.*", "janome.*", "lexicalrichness.*",
 ]
 ignore_missing_imports = true
 
