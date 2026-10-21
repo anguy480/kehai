@@ -22,7 +22,7 @@ from vc_multimodal.config import DEFAULT_CONFIG_PATH, AppConfig, ConfigError, lo
 from vc_multimodal.contracts import ContractError
 from vc_multimodal.diarization import DiarizationError
 from vc_multimodal.embeddings import EmbeddingError
-from vc_multimodal.faces import FaceError
+from vc_multimodal.faces import BACKEND_NAMES, FaceError
 from vc_multimodal.ffmpeg import FfmpegError, FfmpegTools
 from vc_multimodal.logging_setup import configure_logging, log_file_path
 from vc_multimodal.ocr import OcrError, get_backend
@@ -494,13 +494,33 @@ def prosody(ctx: typer.Context) -> None:
 
 
 @app.command()
-def face(ctx: typer.Context) -> None:
+def face(
+    ctx: typer.Context,
+    backend: Annotated[
+        str | None,
+        typer.Option(
+            "--backend",
+            help=(
+                "mediapipe or openface, overriding face.backend. Each writes to its own "
+                "folder and QC table, so one never overwrites the other."
+            ),
+        ),
+    ] = None,
+) -> None:
     """Measure facial action units in the participant's video tile."""
     setup = _setup(ctx, face_stage.STAGE)
+    config = setup.config
+    if backend is not None:
+        if backend not in BACKEND_NAMES:
+            _fail(f"--backend must be one of {list(BACKEND_NAMES)}")
+            return
+        config = config.model_copy(
+            update={"face": config.face.model_copy(update={"backend": backend})}
+        )
 
     try:
         result = face_stage.run(
-            setup.config,
+            config,
             setup.roots,
             session_ids=setup.session_ids,
             workers=setup.workers,
@@ -511,10 +531,10 @@ def face(ctx: typer.Context) -> None:
         _fail(str(exc))
         return
 
-    typer.echo(f"\nper-frame measures: {face_stage.face_dir(setup.roots)}")
+    typer.echo(f"\nper-frame measures: {face_stage.face_dir(setup.roots, config.face.backend)}")
     typer.echo(f"wrote {result.path}")
     typer.echo("")
-    for line in face_stage.summarise(result.frame, setup.config):
+    for line in face_stage.summarise(result.frame, config):
         typer.echo(line)
     typer.echo("")
     _print_report(result.report)

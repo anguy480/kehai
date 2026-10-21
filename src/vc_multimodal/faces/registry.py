@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Final
 
 from vc_multimodal.faces.base import FaceBackend, FaceError
 from vc_multimodal.faces.mediapipe_backend import MediaPipeBackend
-from vc_multimodal.faces.openface_backend import OpenFaceBackend
+from vc_multimodal.faces.openface_backend import OpenFaceBackend, resolve_executable
 
 if TYPE_CHECKING:
     from vc_multimodal.config import AppConfig
@@ -36,6 +36,8 @@ def get_backend(config: AppConfig, roots: DataRoots) -> FaceBackend:
         return OpenFaceBackend(
             config.face.openface,
             csv_dir=_under_work(roots, csv_dir) if csv_dir else None,
+            executable=resolve_executable(config.face.openface.executable),
+            scratch_dir=roots.work_path("tmp", "face_openface", create_parent=False),
         )
     msg = f"unknown face backend {name!r}; available: {list(BACKEND_NAMES)}"  # type: ignore[unreachable]
     raise FaceError(msg)

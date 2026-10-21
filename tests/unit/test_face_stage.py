@@ -30,6 +30,7 @@ from vc_multimodal.faces import (
     get_backend,
     require_single_backend,
 )
+from vc_multimodal.faces.openface_backend import OPENFACE_BIN_ENV
 from vc_multimodal.features.face_math import FrameMeasure, head_pose_from_matrix
 from vc_multimodal.features.sampling import resolve_sampling
 from vc_multimodal.handoff_text import (
@@ -338,11 +339,46 @@ def test_mediapipe_without_its_model_explains_where_to_put_it(
     assert "pinned by hash" in reason
 
 
+@pytest.fixture
+def no_openface_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A machine without OpenFace, whatever this one has."""
+    monkeypatch.delenv(OPENFACE_BIN_ENV, raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+
+
+@pytest.mark.usefixtures("no_openface_binary")
 def test_openface_without_a_directory_explains_itself(roots: DataRoots):
-    config = load_config(DEFAULT, overrides={"face.backend": "openface"})
+    config = load_config(
+        DEFAULT, overrides={"face.backend": "openface", "face.openface.csv_dir": None}
+    )
     backend = get_backend(config, roots)
     assert not backend.available()
     assert "csv_dir is not set" in backend.unavailable_reason()
+
+
+@pytest.mark.usefixtures("no_openface_binary")
+def test_openface_with_neither_binary_nor_output_says_how_to_set_it_up(roots: DataRoots):
+    config = load_config(DEFAULT, overrides={"face.backend": "openface"})
+    backend = get_backend(config, roots)
+    assert not backend.available()
+    reason = backend.unavailable_reason()
+    assert "FeatureExtraction was not found" in reason
+    assert OPENFACE_BIN_ENV in reason
+
+
+def test_a_configured_openface_binary_makes_the_backend_available(roots: DataRoots, tmp_path: Path):
+    binary = tmp_path / "FeatureExtraction"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    config = load_config(
+        DEFAULT,
+        overrides={"face.backend": "openface", "face.openface.executable": str(binary)},
+    )
+    backend = get_backend(config, roots)
+    assert isinstance(backend, OpenFaceBackend)
+    assert backend.available()
+    assert backend.runs_openface
+    assert "smoothed:1s" in backend.version()
 
 
 def test_a_wrong_model_hash_is_refused(roots: DataRoots, default_config: AppConfig):
@@ -914,17 +950,30 @@ def test_a_backend_change_on_a_subset_is_refused(
     face_session(28)
     stage.run(default_config, roots, workers=1)
 
-    # A second session already measured with the other backend.
+    # A second session in the same folder recorded as the other backend, as a
+    # tree written before each backend had its own folder could be.
     stage.face_path(roots, 3).parent.mkdir(parents=True, exist_ok=True)
     stage.frame_table(3, frame_measures(), default_config.face.unit_keys).to_parquet(
         stage.face_path(roots, 3), index=False
     )
-    stage.write_backend_record(
-        roots, 3, OpenFaceBackend(default_config.face.openface, csv_dir=roots.work / "of")
+    stage.backend_sidecar_path(roots, 3).write_text(
+        '{"session_id": 3, "backend": "openface", "backend_version": "x"}', encoding="utf-8"
     )
 
     with pytest.raises(FaceError, match="more than one backend"):
         stage.run(default_config, roots, workers=1)
+
+
+def test_an_openface_record_is_kept_out_of_the_mediapipe_folder(
+    roots: DataRoots, default_config: AppConfig
+):
+    stage.write_backend_record(
+        roots, 3, OpenFaceBackend(default_config.face.openface, csv_dir=roots.work / "of")
+    )
+    assert stage.backend_sidecar_path(roots, 3, "openface").is_file()
+    assert not stage.backend_sidecar_path(roots, 3).exists()
+    assert stage.stored_backends(roots) == {}
+    assert stage.stored_backends(roots, "openface")[3]["backend"] == "openface"
 
 
 def test_a_missing_or_corrupt_record_reads_as_absent(roots: DataRoots):

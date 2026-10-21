@@ -48,6 +48,13 @@ STAGE: Final = "face"
 FACE_DIRNAME: Final = "face"
 FACE_QC_FILENAME: Final = "face_qc.csv"
 
+#: Each backend's per-frame measures and QC table live apart. MediaPipe keeps
+#: the original names, so every existing table and bundle still points at the
+#: same files; OpenFace gets its own, so a run with one backend can never
+#: overwrite, top up or mix with the other's (docs/decisions/0013).
+FACE_DIRNAMES: Final = {"mediapipe": FACE_DIRNAME, "openface": "face_openface"}
+FACE_QC_FILENAMES: Final = {"mediapipe": FACE_QC_FILENAME, "openface": "face_openface_qc.csv"}
+
 FLAG_TOO_MANY_DROPPED: Final = "face_too_many_frames_dropped"
 FLAG_NO_FACE_FOUND: Final = "face_no_frames_measured"
 FLAG_NO_LETTERBOX: Final = "face_letterbox_not_detected"
@@ -89,19 +96,29 @@ QC_COLUMN_ORDER: Final = (
 )
 
 
-def face_dir(roots: DataRoots) -> Path:
+def face_dirname(backend: str | None = None) -> str:
+    """The work-root folder for one backend's measures; MediaPipe's by default."""
+    return FACE_DIRNAMES.get(backend or "", FACE_DIRNAME)
+
+
+def face_qc_filename(backend: str | None = None) -> str:
+    """The QC table for one backend; MediaPipe's by default."""
+    return FACE_QC_FILENAMES.get(backend or "", FACE_QC_FILENAME)
+
+
+def face_dir(roots: DataRoots, backend: str | None = None) -> Path:
     """Directory holding per-frame facial measures, under the work root."""
-    return roots.work_path(FACE_DIRNAME, create_parent=True)
+    return roots.work_path(face_dirname(backend), create_parent=True)
 
 
-def face_path(roots: DataRoots, session_id: int) -> Path:
+def face_path(roots: DataRoots, session_id: int, backend: str | None = None) -> Path:
     """Where one session's per-frame measures are written."""
-    return roots.work_path(FACE_DIRNAME, f"{session_id}.parquet")
+    return roots.work_path(face_dirname(backend), f"{session_id}.parquet")
 
 
-def backend_sidecar_path(roots: DataRoots, session_id: int) -> Path:
+def backend_sidecar_path(roots: DataRoots, session_id: int, backend: str | None = None) -> Path:
     """Where one session's backend record is written."""
-    return roots.work_path(FACE_DIRNAME, f"{session_id}{BACKEND_SIDECAR_SUFFIX}")
+    return roots.work_path(face_dirname(backend), f"{session_id}{BACKEND_SIDECAR_SUFFIX}")
 
 
 def write_backend_record(roots: DataRoots, session_id: int, backend: FaceBackend) -> Path:
@@ -114,7 +131,7 @@ def write_backend_record(roots: DataRoots, session_id: int, backend: FaceBackend
     produced a session is not optional (docs/decisions/0013).
     """
     return write_json(
-        backend_sidecar_path(roots, session_id),
+        backend_sidecar_path(roots, session_id, backend.name),
         {
             "session_id": session_id,
             "backend": backend.name,
@@ -123,9 +140,11 @@ def write_backend_record(roots: DataRoots, session_id: int, backend: FaceBackend
     )
 
 
-def read_backend_record(roots: DataRoots, session_id: int) -> Mapping[str, str] | None:
+def read_backend_record(
+    roots: DataRoots, session_id: int, backend: str | None = None
+) -> Mapping[str, str] | None:
     """The recorded backend for a session, or None if there is none."""
-    path = backend_sidecar_path(roots, session_id)
+    path = backend_sidecar_path(roots, session_id, backend)
     if not path.is_file():
         return None
     try:
@@ -329,10 +348,11 @@ def run(
     discovery = discover_sessions(roots.data, config.dataset)
     selected, missing = select_sessions(discovery.sessions, session_ids)
     notes = [f"requested session(s) not found: {sorted(missing)}"] if missing else []
-    face_dir(roots)
+    which = engine.name
+    face_dir(roots, which)
     records: dict[int, Mapping[str, object]] = {}
 
-    qc_target = roots.out_path(FACE_QC_FILENAME)
+    qc_target = roots.out_path(face_qc_filename(which))
 
     def is_done(session: RawSession) -> bool:
         """Done means every output exists, including the QC row.
@@ -343,8 +363,8 @@ def run(
         earlier partial run heals itself.
         """
         return (
-            face_path(roots, session.session_id).exists()
-            and backend_sidecar_path(roots, session.session_id).is_file()
+            face_path(roots, session.session_id, which).exists()
+            and backend_sidecar_path(roots, session.session_id, which).is_file()
             and has_row(qc_target, session.session_id)
         )
 
@@ -362,7 +382,7 @@ def run(
         measures = apply_confidence_threshold(measures, config.face.min_confidence)
 
         table = frame_table(session.session_id, measures, config.face.unit_keys)
-        write_parquet(face_path(roots, session.session_id), table)
+        write_parquet(face_path(roots, session.session_id, which), table)
         write_backend_record(roots, session.session_id, engine)
 
         record = qc_record(
@@ -414,7 +434,7 @@ def run(
     # in this run: a subset rerun after a backend change would otherwise leave
     # the rest of the work tree inconsistent and unnoticed until aggregation.
     require_single_backend(
-        [record["backend"] for record in stored_backends(roots).values()],
+        [record["backend"] for record in stored_backends(roots, which).values()],
         context="the stored facial measurements",
     )
     write_csv(qc_target, frame)
@@ -500,14 +520,14 @@ def _crop_for(
     return boxes[0], any(letterboxed for _, letterboxed in found), stable
 
 
-def stored_backends(roots: DataRoots) -> dict[int, Mapping[str, str]]:
-    """The backend recorded for every session with measurements on disk."""
+def stored_backends(roots: DataRoots, backend: str | None = None) -> dict[int, Mapping[str, str]]:
+    """The backend recorded for every session with measurements in one folder."""
     found: dict[int, Mapping[str, str]] = {}
-    for path in sorted(face_dir(roots).glob(f"*{BACKEND_SIDECAR_SUFFIX}")):
+    for path in sorted(face_dir(roots, backend).glob(f"*{BACKEND_SIDECAR_SUFFIX}")):
         stem = path.name.removesuffix(BACKEND_SIDECAR_SUFFIX)
         if not stem.isdigit():
             continue
-        record = read_backend_record(roots, int(stem))
+        record = read_backend_record(roots, int(stem), backend)
         if record is not None:
             found[int(stem)] = record
     return found

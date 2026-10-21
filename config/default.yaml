@@ -415,10 +415,20 @@ face:
     # recordings do not have. See docs/decisions/0013.
     head_pose: true
 
+  # OpenFace 2.x. When FeatureExtraction is available (`executable`, else
+  # $VC_OPENFACE_BIN, else on PATH), `vc face --backend openface` runs it on
+  # the participant's tile and keeps its CSV in csv_dir; otherwise the CSVs
+  # already in csv_dir are imported. Its per-frame output goes to its own
+  # folder, never the MediaPipe one. See the README for setup.
   openface:
-    csv_dir: null                  # relative to $VC_WORK_ROOT
+    csv_dir: "face_openface/csv"   # relative to $VC_WORK_ROOT
     confidence_column: "confidence"
     success_column: "success"
+    executable: null
+    # Exploratory, pre-registered in docs/prereg/per-modality.md: a centred
+    # 1.0 s rolling mean of each action unit, at the video's own frame rate,
+    # within runs of valid frames and never across a dropped one.
+    smoothing_s: 1.0
 
 aggregate:
   # Applied to every action unit in both the speaking and listening windows.
