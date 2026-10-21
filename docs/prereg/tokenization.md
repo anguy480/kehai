@@ -8,7 +8,8 @@ confirmatory terms.
 Branch `exploratory/tokenization`, from `main` at `decaa1d`. This file is
 committed and pushed before any feature is recomputed and before any label is
 used. Anything that reads transcripts is run by the project owner; anything that
-reads labels is run by the label holder (Tanaka). No transcript text, label,
+reads labels is run by the label holder, who is also the project owner (the
+labels have been held on this machine since 2026-10-01). No transcript text, label,
 score, prediction or result is written to this repository.
 
 ## The source

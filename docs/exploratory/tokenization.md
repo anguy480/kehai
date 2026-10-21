@@ -4,12 +4,12 @@
 [the pre-registration](../prereg/tokenization.md). This page covers only how to
 run it.
 
-There are two steps, run by two people:
+There are two steps, both run by the project owner, who holds the transcripts
+and the labels:
 
-1. **Recompute the features** (the project owner, where the transcripts are).
-   No label is read.
-2. **Analyse them** (Tanaka, where the labels are). Prepared once step 1 has
-   passed its reproduction check.
+1. **Recompute the features.** Reads the transcripts; no label is read.
+2. **Analyse them.** Reads the labels. Prepared once step 1 has passed its
+   reproduction check.
 
 ## Step 1: recompute the eight lemma-based features
 
