@@ -64,8 +64,11 @@ step 2 can run.
 
 ## Step 2: the analysis
 
-Reads the labels, so it is run by the label holder, from a clean checkout of
+Reads the labels, so it is run by the label holder, or by Claude Code at the
+label holder's explicit request, from a clean checkout of
 `exploratory/tokenization` at or after the commit that fixes (c)'s SHA-256.
+Claude Code passes the labels' path to the command and never reads the labels
+or the outputs.
 The command refuses a checkout with uncommitted or untracked files, any step 1
 table whose SHA-256 is not the planned one, and a results folder already in
 use.
