@@ -4,7 +4,8 @@
 https://github.com/hirokitan1155/virtual_client_SRS2_analysis, ec07010, MIT),
 copied as written with the sentence embeddings, agenda calls and word-list
 files removed. It is the oracle the port must match: the port is rewritten for
-readability, this is not.
+readability, this is not. Its two keyword switches exist for variants (b) and
+(c); at their defaults it is the loop as written.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from vc_multimodal.exploratory.tokenization.token_features import (
     OPPOSITE_FILES,
     ORIGINAL_MIN_LEN,
     STOPWORDS,
+    VARIANT_C_EXCLUDED_POS2,
     doctor_speaker,
     transcript_tokens,
 )
@@ -67,7 +69,12 @@ def write_transcripts(folder: Path, session_ids: list[int]) -> Path:
     return folder
 
 
-def original_token_features(file_path: Path) -> dict[str, float]:  # noqa: PLR0912, PLR0915
+def original_token_features(  # noqa: PLR0912, PLR0915
+    file_path: Path,
+    *,
+    length_rule: bool = True,
+    excluded_pos2: frozenset[str] = frozenset({"数"}),
+) -> dict[str, float]:
     """analysis.py lines 197-393, minus embeddings, agenda and word-list files.
 
     Its structure is kept on purpose, so the lint rules it breaks are silenced
@@ -105,11 +112,11 @@ def original_token_features(file_path: Path) -> dict[str, float]:  # noqa: PLR09
                 for token in t.tokenize(result_space):
                     pos1, pos2 = token.part_of_speech.split(",")[:2]
                     if pos1 in {"名詞", "動詞", "形容詞"}:  # noqa: SIM102 - as written
-                        if pos2 not in {"数"}:  # noqa: SIM102 - as written
+                        if pos2 not in excluded_pos2:  # noqa: SIM102 - as written
                             if (
                                 token.base_form not in stopwords
                                 and token.surface not in stopwords
-                                and len(token.base_form) > 2
+                                and (not length_rule or len(token.base_form) > 2)
                             ):
                                 base = normalization.get(token.base_form, token.base_form)
                                 if speaker_id == 0:
@@ -210,6 +217,38 @@ def test_the_default_rule_reproduces_analysis_py(transcripts: Path) -> None:
             assert ported[name] == pytest.approx(original[name], nan_ok=True), (path.name, name)
 
 
+def test_variants_b_and_c_match_the_original_loop_with_the_same_switches(
+    transcripts: Path,
+) -> None:
+    for path in sorted(transcripts.glob("*.txt")):
+        b = transcript_tokens(path, TOKENIZER, None).features
+        c = transcript_tokens(path, TOKENIZER, None, VARIANT_C_EXCLUDED_POS2).features
+        want_b = original_token_features(path, length_rule=False)
+        want_c = original_token_features(
+            path, length_rule=False, excluded_pos2=VARIANT_C_EXCLUDED_POS2
+        )
+        for name in FEATURES:
+            assert b[name] == pytest.approx(want_b[name], nan_ok=True), (path.name, name)
+            assert c[name] == pytest.approx(want_c[name], nan_ok=True), (path.name, name)
+
+
+def test_variant_c_drops_only_non_independent_tokens(transcripts: Path) -> None:
+    """(c) is (b) less the 非自立 tokens, which the synthetic text must contain."""
+    path = transcripts / "7.txt"
+    b = transcript_tokens(path, TOKENIZER, None)
+    c = transcript_tokens(path, TOKENIZER, None, VARIANT_C_EXCLUDED_POS2)
+    dropped = b.lemmas - c.lemmas
+    assert dropped, "no 非自立 token in the synthetic text"
+    assert not c.lemmas - b.lemmas
+    text = path.read_text(encoding="utf-8-sig")
+    non_independent = {
+        tok.base_form
+        for tok in TOKENIZER.tokenize(text)
+        if tok.part_of_speech.split(",")[1] == "非自立"
+    }
+    assert set(dropped) <= non_independent
+
+
 def test_the_synthetic_text_exercises_the_rule(transcripts: Path) -> None:
     """Without short lemmas to drop, the test above would prove nothing."""
     path = transcripts / "7.txt"
@@ -249,7 +288,7 @@ def test_a_transcript_not_named_by_session_is_refused(transcripts: Path) -> None
 # ---------------------------------------------------------------------------
 # The reproduction gate
 # ---------------------------------------------------------------------------
-def test_a_reproduced_table_writes_both_variants(transcripts: Path, tmp_path: Path) -> None:
+def test_a_reproduced_table_writes_every_variant(transcripts: Path, tmp_path: Path) -> None:
     nlp = nlp_features(transcripts, tmp_path / "work" / "nlp_features.csv")
     out = tmp_path / "out"
     result = tokenization.run(transcripts, nlp, out, TOKENIZER)
@@ -267,7 +306,10 @@ def test_a_reproduced_table_writes_both_variants(transcripts: Path, tmp_path: Pa
     pd.testing.assert_frame_equal(
         same[list(tokenization.NLP_COLUMNS)], original, check_dtype=False, atol=1e-12
     )
-    assert len(result.written) == 4
+    assert len(result.written) == 6
+    c = pd.read_csv(out / tokenization.TEXT_NEW_C)
+    pd.testing.assert_frame_equal(c[unchanged], original[unchanged])
+    assert list(c["session_id"]) == sorted(SESSIONS)
 
 
 def test_a_value_off_by_more_than_the_tolerance_stops_everything(
@@ -279,6 +321,23 @@ def test_a_value_off_by_more_than_the_tolerance_stops_everything(
         tokenization.run(transcripts, nlp, out, TOKENIZER)
     assert any(line.startswith("Word_ratio: 1 of 5") for line in caught.value.lines)
     assert not out.exists()
+
+
+def test_no_variant_is_computed_when_the_gate_fails(
+    transcripts: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nlp = nlp_features(transcripts, tmp_path / "work" / "nlp_features.csv", nudge=1e-6)
+    computed: list[str] = []
+    real = tokenization.compute
+
+    def spy(files: list[Path], tokenizer: Tokenizer, variant: tokenization.Variant) -> object:
+        computed.append(variant.key)
+        return real(files, tokenizer, variant)
+
+    monkeypatch.setattr(tokenization, "compute", spy)
+    with pytest.raises(tokenization.ReproductionError):
+        tokenization.run(transcripts, nlp, tmp_path / "out", TOKENIZER)
+    assert computed == ["a"]
 
 
 def test_a_difference_within_the_tolerance_passes(transcripts: Path, tmp_path: Path) -> None:
@@ -309,6 +368,7 @@ def test_the_report_is_aggregate_only(transcripts: Path, tmp_path: Path) -> None
     text = "\n".join(result.report_lines(tokenization.file_sha256))
     assert "reproduction check passed" in text
     assert "vocabulary (distinct)" in text
+    assert "(c) against (b)" in text
     # No sentence from any transcript is printed, and no session is named.
     for sentence in [*DOCTOR, *PATIENT]:
         assert sentence not in text
@@ -330,6 +390,7 @@ def test_the_command_succeeds_and_prints_digests(
 ) -> None:
     nlp = nlp_features(transcripts, tmp_path / "work" / "nlp_features.csv")
     assert command(transcripts, nlp, tmp_path / "result") == 0
-    assert capsys.readouterr().out.count("SHA-256") == 4
+    assert capsys.readouterr().out.count("SHA-256") == 6
     assert (tmp_path / "result" / tokenization.TEXT_NEW).is_file()
+    assert (tmp_path / "result" / tokenization.TEXT_NEW_C).is_file()
     assert roots.out.is_dir()

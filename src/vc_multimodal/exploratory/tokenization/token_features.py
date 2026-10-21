@@ -30,9 +30,12 @@ Word_count_doc, Word_ratio, Mean_words_per_turn, MTLD_patient and MTLD_doctor.
 Everything that reads `demo_2.csv`, computes a correlation, calls OpenAI or
 encodes a sentence is left out, and so is the per-session word-list output.
 
-One parameter is added, `min_len`: a kept lemma must have at least that many
-characters. Its default, `ORIGINAL_MIN_LEN`, is the original rule
-`len(token.base_form) > 2`; None removes the rule.
+Two parameters are added. `min_len`: a kept lemma must have at least that
+many characters. Its default, `ORIGINAL_MIN_LEN`, is the original rule
+`len(token.base_form) > 2`; None removes the rule. `excluded_pos2`: the second
+part-of-speech fields that drop a token. Its default, `EXCLUDED_POS2`, is the
+original `{"数"}`; `VARIANT_C_EXCLUDED_POS2` adds 非自立, one value of the line
+analysis.py has commented out (its line 276).
 
 Everything else is kept as written, including choices we would make
 differently, because the port is only useful if it reproduces
@@ -95,16 +98,22 @@ OPPOSITE_FILES: Final = frozenset(
 CONTENT_POS: Final = frozenset({"名詞", "動詞", "形容詞"})
 EXCLUDED_POS2: Final = frozenset({"数"})
 
+#: Variant (c) of the pre-registration's Amendment 1: also drop 非自立.
+NON_INDEPENDENT: Final = "非自立"
+VARIANT_C_EXCLUDED_POS2: Final = EXCLUDED_POS2 | {NON_INDEPENDENT}
+
 
 def doctor_speaker(session_id: int) -> int:
     """Which diarized speaker is the doctor in this session."""
     return 1 if session_id in OPPOSITE_FILES else 0
 
 
-def kept_lemma(token: Any, min_len: int | None) -> str | None:
+def kept_lemma(
+    token: Any, min_len: int | None, excluded_pos2: frozenset[str] = EXCLUDED_POS2
+) -> str | None:
     """The normalised lemma if the token passes every filter, else None."""
     pos1, pos2 = token.part_of_speech.split(",")[:2]
-    if pos1 not in CONTENT_POS or pos2 in EXCLUDED_POS2:
+    if pos1 not in CONTENT_POS or pos2 in excluded_pos2:
         return None
     base: str = token.base_form
     if base in STOPWORDS or token.surface in STOPWORDS:
@@ -140,7 +149,11 @@ def _mtld(words: list[str]) -> float:
 
 
 def session_tokens(
-    lines: Iterable[str], session_id: int, tokenizer: Any, min_len: int | None
+    lines: Iterable[str],
+    session_id: int,
+    tokenizer: Any,
+    min_len: int | None,
+    excluded_pos2: frozenset[str] = EXCLUDED_POS2,
 ) -> SessionTokens:
     """The eight features for one transcript, as analysis.py computes them.
 
@@ -150,6 +163,7 @@ def session_tokens(
         session_id: The file's stem.
         tokenizer: A `janome.tokenizer.Tokenizer`.
         min_len: Fewest characters a kept lemma may have; None for no rule.
+        excluded_pos2: Second part-of-speech fields that drop a token.
     """
     doctor_id = doctor_speaker(session_id)
     by_speaker: dict[int, list[str]] = {0: [], 1: []}
@@ -165,7 +179,7 @@ def session_tokens(
         if speaker_id != doctor_id:
             patient_turns += 1
         for token in tokenizer.tokenize(text):
-            lemma = kept_lemma(token, min_len)
+            lemma = kept_lemma(token, min_len, excluded_pos2)
             if lemma is None:
                 continue
             by_speaker[0 if speaker_id == 0 else 1].append(lemma)
@@ -193,7 +207,12 @@ def session_tokens(
     return SessionTokens(session_id, features, counter0 + counter1)
 
 
-def transcript_tokens(path: Path, tokenizer: Any, min_len: int | None) -> SessionTokens:
+def transcript_tokens(
+    path: Path,
+    tokenizer: Any,
+    min_len: int | None,
+    excluded_pos2: frozenset[str] = EXCLUDED_POS2,
+) -> SessionTokens:
     """Read one transcript as analysis.py does (UTF-8 with BOM) and compute it."""
     with path.open("r", encoding="utf-8-sig") as handle:
-        return session_tokens(handle, int(path.stem), tokenizer, min_len)
+        return session_tokens(handle, int(path.stem), tokenizer, min_len, excluded_pos2)

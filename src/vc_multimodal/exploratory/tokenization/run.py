@@ -1,4 +1,4 @@
-"""Recompute the eight lemma-based text features, with and without the length rule.
+"""Recompute the eight lemma-based text features under the pre-registered variants.
 
 Run where the transcripts are, by the person allowed to read them. It reads the
 `.txt` transcripts `analysis.py` read and the existing `nlp_features.csv`, and:
@@ -6,8 +6,9 @@ Run where the transcripts are, by the person allowed to read them. It reads the
 1. Computes variant (a), the original rule, and checks it reproduces the eight
    columns of `nlp_features.csv`, row for row. If it does not, it stops: nothing
    is written and variant (b) is not computed.
-2. Computes variant (b), with no length rule.
-3. Writes four tables under the output root, each with a `session_id` taken
+2. Computes variant (b), with no length rule, and variant (c), with no length
+   rule and 非自立 tokens excluded (Amendment 1 of the pre-registration).
+3. Writes six tables under the output root, each with a `session_id` taken
    from the transcript file names: the eight features under each variant, and
    the full 20 under each, the twelve features that do not use lemmas copied
    unchanged from `nlp_features.csv`. Rows are matched to `nlp_features.csv` by
@@ -22,7 +23,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -31,8 +32,11 @@ import numpy as np
 import pandas as pd
 
 from vc_multimodal.exploratory.tokenization.token_features import (
+    EXCLUDED_POS2,
     FEATURES,
+    NON_INDEPENDENT,
     ORIGINAL_MIN_LEN,
+    VARIANT_C_EXCLUDED_POS2,
     SessionTokens,
     transcript_tokens,
 )
@@ -76,6 +80,31 @@ TOKENS_ORIGINAL: Final = "token_features_original.csv"
 TOKENS_NEW: Final = "token_features_new.csv"
 TEXT_ORIGINAL: Final = "text_features_original.csv"
 TEXT_NEW: Final = "text_features_new.csv"
+TOKENS_NEW_C: Final = "token_features_new_c.csv"
+TEXT_NEW_C: Final = "text_features_new_c.csv"
+
+
+@dataclass(frozen=True, slots=True)
+class Variant:
+    """One pre-registered filter, and the two files it writes."""
+
+    key: str
+    label: str
+    min_len: int | None
+    excluded_pos2: frozenset[str]
+    tokens_file: str
+    text_file: str
+
+
+ORIGINAL: Final = Variant(
+    "a", "(a) original", ORIGINAL_MIN_LEN, EXCLUDED_POS2, TOKENS_ORIGINAL, TEXT_ORIGINAL
+)
+NEW: Final = Variant("b", "(b) no length rule", None, EXCLUDED_POS2, TOKENS_NEW, TEXT_NEW)
+NEW_C: Final = Variant(
+    "c", f"(c) (b), no {NON_INDEPENDENT}", None, VARIANT_C_EXCLUDED_POS2, TOKENS_NEW_C, TEXT_NEW_C
+)
+#: In the order they are computed; (a) first, because it is the gate.
+VARIANTS: Final = (ORIGINAL, NEW, NEW_C)
 
 
 class TokenizationError(RuntimeError):
@@ -138,13 +167,15 @@ def read_nlp_features(path: Path) -> pd.DataFrame:
     return frame
 
 
-def compute(files: Sequence[Path], tokenizer: Any, min_len: int | None) -> list[SessionTokens]:
+def compute(files: Sequence[Path], tokenizer: Any, variant: Variant) -> list[SessionTokens]:
     """One variant over every transcript, in file order."""
     found = []
     for index, path in enumerate(files, start=1):
-        found.append(transcript_tokens(path, tokenizer, min_len))
+        found.append(transcript_tokens(path, tokenizer, variant.min_len, variant.excluded_pos2))
         if index % 10 == 0 or index == len(files):
-            logger.info("%s: min_len=%s, %d/%d transcript(s)", STAGE, min_len, index, len(files))
+            logger.info(
+                "%s: variant (%s), %d/%d transcript(s)", STAGE, variant.key, index, len(files)
+            )
     return found
 
 
@@ -190,6 +221,28 @@ def text_table(nlp: pd.DataFrame, tokens: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
+def _pooled(sessions: Sequence[SessionTokens]) -> Counter[str]:
+    """Kept lemmas across all sessions."""
+    pooled: Counter[str] = Counter()
+    for session in sessions:
+        pooled.update(session.lemmas)
+    return pooled
+
+
+def _ranked(counts: Counter[str]) -> list[str]:
+    """The most frequent lemmas, one per line, ranked."""
+    return [
+        f"  {rank:>2}. {lemma}  {count:,}"
+        for rank, (lemma, count) in enumerate(counts.most_common(TOP_RECOVERED), start=1)
+    ]
+
+
+def _spread(values: Sequence[int]) -> str:
+    """Minimum, median and maximum of per-session counts."""
+    array = np.array(values)
+    return f"min {array.min()}, median {float(np.median(array)):.0f}, max {array.max()}"
+
+
 @dataclass(frozen=True, slots=True)
 class Result:
     """What one run wrote, and the aggregate counts it reports."""
@@ -197,48 +250,57 @@ class Result:
     out_dir: Path
     written: tuple[Path, ...]
     n_sessions: int
-    original: tuple[SessionTokens, ...]
-    new: tuple[SessionTokens, ...]
+    sessions: Mapping[str, tuple[SessionTokens, ...]]
 
     def report_lines(self, digest: Callable[[Path], str]) -> list[str]:
         """Aggregate counts only: no per-session word is printed."""
-        lemmas_a: Counter[str] = Counter()
-        lemmas_b: Counter[str] = Counter()
-        for session in self.original:
-            lemmas_a.update(session.lemmas)
-        for session in self.new:
-            lemmas_b.update(session.lemmas)
-        recovered = lemmas_b - lemmas_a
-        per_session = np.array(
-            [b.n_lemmas - a.n_lemmas for a, b in zip(self.original, self.new, strict=True)]
-        )
+        pooled = {key: _pooled(found) for key, found in self.sessions.items()}
+        a, b, c = (self.sessions[v.key] for v in VARIANTS)
         lines = [
             f"reproduction check passed: variant (a) matches nlp_features.csv in all "
             f"{len(FEATURES)} columns for {self.n_sessions} session(s), tolerance {TOLERANCE:g}",
             "",
-            f"{'':28}{'(a) original':>14}{'(b) no length rule':>20}",
-            f"{'kept lemmas, all sessions':28}{sum(lemmas_a.values()):>14,}"
-            f"{sum(lemmas_b.values()):>20,}",
-            f"{'vocabulary (distinct)':28}{len(lemmas_a):>14,}{len(lemmas_b):>20,}",
-            "",
-            f"recovered by (b): {sum(recovered.values()):,} lemma token(s), "
-            f"{len(recovered):,} distinct lemma(s)",
-            f"recovered per session: min {per_session.min()}, "
-            f"median {float(np.median(per_session)):.0f}, max {per_session.max()}",
-            "",
-            f"the {TOP_RECOVERED} most frequent recovered lemmas, across all sessions:",
+            f"{'':28}" + "".join(f"{v.label:>22}" for v in VARIANTS),
+            f"{'kept lemmas, all sessions':28}"
+            + "".join(f"{sum(pooled[v.key].values()):>22,}" for v in VARIANTS),
+            f"{'vocabulary (distinct)':28}"
+            + "".join(f"{len(pooled[v.key]):>22,}" for v in VARIANTS),
         ]
-        lines.extend(
-            f"  {rank:>2}. {lemma}  {count:,}"
-            for rank, (lemma, count) in enumerate(recovered.most_common(TOP_RECOVERED), start=1)
-        )
-        lines.append("")
+
+        recovered = pooled[NEW.key] - pooled[ORIGINAL.key]
+        lines += [
+            "",
+            f"(b) against (a): {sum(recovered.values()):,} lemma token(s) recovered, "
+            f"{len(recovered):,} distinct lemma(s)",
+            "recovered per session: "
+            + _spread([y.n_lemmas - x.n_lemmas for x, y in zip(a, b, strict=True)]),
+            f"the {TOP_RECOVERED} most frequent lemmas (b) recovers, across all sessions:",
+            *_ranked(recovered),
+        ]
+
+        dropped = pooled[NEW.key] - pooled[NEW_C.key]
+        gained = pooled[NEW_C.key] - pooled[ORIGINAL.key]
+        lost = pooled[ORIGINAL.key] - pooled[NEW_C.key]
+        lines += [
+            "",
+            f"(c) against (b): {sum(dropped.values()):,} lemma token(s) dropped as "
+            f"{NON_INDEPENDENT}, {len(dropped):,} distinct lemma(s)",
+            "dropped per session: "
+            + _spread([y.n_lemmas - z.n_lemmas for y, z in zip(b, c, strict=True)]),
+            f"(c) against (a): {sum(gained.values()):,} lemma token(s) gained, "
+            f"{sum(lost.values()):,} lost",
+            "net change per session: "
+            + _spread([z.n_lemmas - x.n_lemmas for x, z in zip(a, c, strict=True)]),
+            f"the {TOP_RECOVERED} most frequent lemmas (c) drops from (b), across all sessions:",
+            *_ranked(dropped),
+            "",
+        ]
         lines.extend(f"wrote {path}  SHA-256 {digest(path)}" for path in self.written)
         return lines
 
 
 def run(transcripts: Path, nlp_features: Path, out_dir: Path, tokenizer: Any) -> Result:
-    """Check the port against the original, then compute and write both variants.
+    """Check the port against the original, then compute and write every variant.
 
     Raises:
         TokenizationError: if the inputs are not what analysis.py read.
@@ -254,33 +316,30 @@ def run(transcripts: Path, nlp_features: Path, out_dir: Path, tokenizer: Any) ->
         )
         raise TokenizationError(msg)
 
-    original = compute(files, tokenizer, ORIGINAL_MIN_LEN)
-    tokens_a = feature_frame(original)
-    problems = reproduction_problems(nlp, tokens_a)
+    sessions = {ORIGINAL.key: compute(files, tokenizer, ORIGINAL)}
+    tokens = {ORIGINAL.key: feature_frame(sessions[ORIGINAL.key])}
+    problems = reproduction_problems(nlp, tokens[ORIGINAL.key])
     if problems:
         raise ReproductionError(
             [
                 "REPRODUCTION FAILED: variant (a) does not match nlp_features.csv. "
-                "Nothing was written and variant (b) was not computed.",
+                "Nothing was written and no other variant was computed.",
                 *problems,
             ]
         )
     logger.info("%s: variant (a) reproduces nlp_features.csv", STAGE)
 
-    new = compute(files, tokenizer, None)
-    tokens_b = feature_frame(new)
+    for variant in VARIANTS[1:]:
+        sessions[variant.key] = compute(files, tokenizer, variant)
+        tokens[variant.key] = feature_frame(sessions[variant.key])
     out_dir.mkdir(parents=True, exist_ok=True)
-    tables = {
-        TOKENS_ORIGINAL: tokens_a,
-        TOKENS_NEW: tokens_b,
-        TEXT_ORIGINAL: text_table(nlp, tokens_a),
-        TEXT_NEW: text_table(nlp, tokens_b),
+    tables = {variant.tokens_file: tokens[variant.key] for variant in VARIANTS} | {
+        variant.text_file: text_table(nlp, tokens[variant.key]) for variant in VARIANTS
     }
     written = tuple(write_csv(out_dir / name, frame) for name, frame in tables.items())
     return Result(
         out_dir=out_dir,
         written=written,
         n_sessions=len(files),
-        original=tuple(original),
-        new=tuple(new),
+        sessions={key: tuple(found) for key, found in sessions.items()},
     )
