@@ -695,6 +695,16 @@ def model(
         Path | None,
         typer.Option("--out", help="Where results go. Defaults to <output root>/model."),
     ] = None,
+    univariate_table: Annotated[
+        bool,
+        typer.Option(
+            "--univariate",
+            help=(
+                "Also write model_univariate.csv: the Spearman correlation of every "
+                "feature with every target, with Benjamini-Hochberg q within each target."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Fit the models. Run this where the questionnaire scores live.
 
@@ -742,6 +752,7 @@ def model(
             features_path=table,
             labels_path=labels,
             out_dir=out,
+            univariate_table=univariate_table,
         )
     except (ModelError, ContractError) as exc:
         _fail(str(exc))

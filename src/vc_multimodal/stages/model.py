@@ -34,6 +34,7 @@ import pandas as pd
 from vc_multimodal.config import AppConfig
 from vc_multimodal.io_utils import read_csv, write_csv, write_text
 from vc_multimodal.logging_setup import get_logger
+from vc_multimodal.modeling import univariate
 from vc_multimodal.modeling.evaluate import (
     MODEL_ELASTIC_NET,
     Comparison,
@@ -67,6 +68,7 @@ STAGE: Final = "model"
 RESULTS_FILENAME: Final = "model_results.csv"
 COMPARISONS_FILENAME: Final = "model_comparisons.csv"
 SUMMARY_FILENAME: Final = "model_summary.md"
+UNIVARIATE_FILENAME: Final = "model_univariate.csv"
 
 #: Column naming the session in a labels file, tried in order. Public because
 #: the handoff README has to tell the label holder what is accepted.
@@ -407,6 +409,8 @@ class ModelResult:
     comparisons_path: Path
     summary_path: Path
     notes: tuple[str, ...] = field(default_factory=tuple)
+    #: Per-feature Spearman correlations with BH q, when asked for.
+    univariate_path: Path | None = None
 
 
 TierName = Literal["confirmatory", "exploratory"]
@@ -513,6 +517,7 @@ def run(
     labels_path: Path,
     out_dir: Path | None = None,
     now: datetime | None = None,
+    univariate_table: bool = False,
 ) -> ModelResult:
     """Run the configured analysis.
 
@@ -525,6 +530,9 @@ def run(
         labels_path: The questionnaire scores. Read here and nowhere else.
         out_dir: Where results go. Defaults to `$VC_OUT_ROOT/model`.
         now: Timestamp, for deterministic tests.
+        univariate_table: Also write the Spearman correlation of every feature
+            with every target, with BH q across all features within each target.
+            Off by default, so a run that does not ask for it is unchanged.
 
     Returns:
         Every estimate, the corrected confirmatory tests, and where they were
@@ -589,6 +597,11 @@ def run(
     write_csv(results_path, results)
     write_csv(comparisons_path, comparisons)
 
+    univariate_path: Path | None = None
+    if univariate_table:
+        univariate_path = destination / UNIVARIATE_FILENAME
+        write_csv(univariate_path, per_feature_table(cohort, config.model.targets))
+
     result = ModelResult(
         estimates=tuple(estimates),
         tests=tuple(tests),
@@ -599,10 +612,27 @@ def run(
         comparisons_path=comparisons_path,
         summary_path=summary_path,
         notes=tuple(notes),
+        univariate_path=univariate_path,
     )
     write_text(summary_path, _summary_markdown(result, config, moment))
     logger.info("%s: wrote %d estimate(s) to %s", STAGE, len(estimates), results_path.name)
     return result
+
+
+def per_feature_table(cohort: Cohort, targets: Sequence[str]) -> pd.DataFrame:
+    """Spearman rho of every feature with every target, with BH q per target.
+
+    Every feature column in the table is one family per target, including the
+    text features when they were joined. Constant features are reported as
+    untestable and are not in the family (`modeling.univariate`).
+    """
+    columns = [
+        str(column)
+        for column in cohort.features.columns
+        if not str(column).startswith("qc__") and family_of(str(column))
+    ]
+    present = [target for target in targets if target in cohort.labels.columns]
+    return univariate.table(univariate.correlate(cohort.features, columns, cohort.labels, present))
 
 
 def _evaluate_everything(
@@ -1066,5 +1096,8 @@ def summarise(result: ModelResult) -> list[str]:
 
     for note in result.notes:
         lines.append(f"NOTE: {note}")
-    lines.extend(["", f"wrote {result.results_path}", f"read {result.summary_path}"])
+    lines.extend(["", f"wrote {result.results_path}"])
+    if result.univariate_path is not None:
+        lines.append(f"wrote {result.univariate_path}")
+    lines.append(f"read {result.summary_path}")
     return lines

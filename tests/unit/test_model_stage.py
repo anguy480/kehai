@@ -710,3 +710,32 @@ class TestTheRunReportsItsOwnCounts:
         frame = pd.read_csv(tiered_run.results_path)
         assert "n_fits_not_converged" in frame.columns
         assert frame["n_fits_not_converged"].notna().all()
+
+
+@pytest.mark.slow
+class TestUnivariateTable:
+    def test_it_is_not_written_unless_asked_for(self, completed_run: stage.ModelResult) -> None:
+        assert completed_run.univariate_path is None
+        assert not (completed_run.results_path.parent / stage.UNIVARIATE_FILENAME).exists()
+
+    def test_it_covers_every_feature_and_target_with_q_within_target(self, tmp_path: Path) -> None:
+        features_path, labels_path = run_inputs(tmp_path)
+        result = stage.run(
+            shrunken_config(**{"model.text_features": None}),
+            DataRoots(data=tmp_path, work=tmp_path, out=tmp_path),
+            features_path=features_path,
+            labels_path=labels_path,
+            out_dir=tmp_path / "out",
+            univariate_table=True,
+        )
+        assert result.univariate_path is not None
+        table = pd.read_csv(result.univariate_path)
+        feature_columns = [
+            c for c in pd.read_csv(features_path).columns if "__" in c and not c.startswith("qc__")
+        ]
+        assert sorted(table["feature"]) == sorted(feature_columns)
+        assert set(table["target"]) == {"K6"}
+        testable = table.loc[table["p"].notna()]
+        assert (testable["q"] >= testable["p"] - 1e-12).all()
+        # Correlations and counts only: no column could carry a label.
+        assert list(table.columns) == ["feature", "target", "n", "rho", "p", "q", "untestable"]
