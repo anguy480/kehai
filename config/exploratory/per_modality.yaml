@@ -14,9 +14,10 @@ targets: ["K6", "SRS2"]
 inputs:
   # features.csv sent in the 4d8a5a1 bundle (docs/analysis-log.md, 2026-10-02).
   base_features_sha256: "375a38b0c8bb138b04ed07ff6504f04a39be7df7fe9df36609d394070e750f49"  # pragma: allowlist secret - a file digest, not a credential
-  # The OpenFace face table. Fixed in a commit of its own, pushed before the
+  # The OpenFace face table, face_openface_features.csv, built by `face-table`
+  # at aef1852 on 2026-10-21. Fixed in a commit of its own, pushed before the
   # second run is handed off.
-  face_features_sha256: null
+  face_features_sha256: "6d67cfb0aad78a8d182972d8c77d261cd8c197a44a01de535c1c16dc133e2e3a"  # pragma: allowlist secret - a file digest, not a credential
 
 modalities:
   prosody:
