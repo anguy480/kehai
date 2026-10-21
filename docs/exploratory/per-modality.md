@@ -5,8 +5,9 @@
 [`config/exploratory/per_modality.yaml`](../../config/exploratory/per_modality.yaml).
 This page covers only how to run it. Every step that reads labels is run by
 the label holder (the project owner, who has held the labels since
-2026-10-01), on the machine that holds them. Claude Code never runs these steps
-and never reads their results.
+2026-10-01), on the machine that holds them, or by Claude Code at the label
+holder's explicit request. Claude Code passes the labels' path to the command
+and never reads the labels or the outputs.
 
 The analysis runs in two parts, because the face features exist only after
 OpenFace extraction:
