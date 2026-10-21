@@ -5,6 +5,10 @@
 confirmatory analysis run from `4d8a5a1`, and no result may be described in
 confirmatory terms.
 
+**Amended on 2026-10-21**, before any label was used on this branch: a second
+variant, (c). See [Amendment 1](#amendment-1-2026-10-21-variant-c); where it
+and the text above differ, the amendment holds.
+
 Branch `exploratory/tokenization`, from `main` at `decaa1d`. This file is
 committed and pushed before any feature is recomputed and before any label is
 used. Anything that reads transcripts is run by the project owner; anything that
@@ -126,3 +130,57 @@ is made: the text features have none in the confirmatory run.
 - No recomputation of the BERT or agenda features, and no OpenAI call.
 - No feature selection and no combined-modality models.
 - Nothing about the face, prosody or turn-taking features.
+
+## Amendment 1, 2026-10-21: variant (c)
+
+**When and from what.** Decided after step 1 of the run instructions had run
+and passed its reproduction gate, from that step's aggregate output only: the
+kept-lemma counts and vocabulary sizes, and the 30 most frequent lemmas that
+(b) recovers across all sessions. No label had been used on this branch, and no
+model or correlation had been run. The choice is therefore informed by the
+token list, though not by any outcome.
+
+**The variant.**
+
+- **New (c):** rule 3 removed, as in (b), and in addition tokens whose second
+  part-of-speech field is 非自立 are excluded. Rule 1 becomes: Janome part of
+  speech is 名詞, 動詞 or 形容詞, and the second field is neither 数 nor
+  非自立.
+- 非自立 is one of the four values on a line that is commented out in
+  `analysis.py` at `ec07010` (line 276,
+  `#if pos2 not in {"非自立", "代名詞", "数","固有名詞"}:`). Only 非自立 is
+  taken from it: 代名詞 and 固有名詞 stay kept, as in (a) and (b).
+- Everything else is as for (b). (b) stays as pre-registered; (c) is added
+  beside it and does not replace it.
+- **New 20 (c)** is the original 20 with the same 8 columns replaced by (c).
+
+**Computation.** (c) is computed by the same command as (b), only after (a)
+has passed the reproduction gate. The same run recomputes (a) and (b), and
+their four files must come out byte-identical to the first run's, whose
+SHA-256 are:
+
+| File | SHA-256 |
+| --- | --- |
+| `token_features_original.csv` | `c9bef307efffc15faca3a6699236a23eb60d707f812306402b6bf2f1e3ae5e19` |
+| `token_features_new.csv` | `a3c2d93adda0bc4bca457624cd261f05b02365eae6a7cce1caa7b354c017b95e` |
+| `text_features_original.csv` | `da984428e499df0bfd406e0139adb4329ab2aefb8bc3c0118e04e8e85b8ffd71` |
+| `text_features_new.csv` | `f5f935230493880c669dcc401126d308f663fad9815170ce5609f548fbc91c3a` |
+
+**Analysis, replacing the corresponding parts above.**
+
+- **Models.** Original 20, new 20 (b) and new 20 (c), each with the elastic
+  net and the random forest as specified above.
+- **Permutation nulls.** For each of the 12 models (3 feature sets × 2 models
+  × 2 outcomes), as specified above. Reported uncorrected.
+- **The test.** For each outcome, model and variant, the Wilcoxon signed-rank
+  test above, original 20 against that variant's new 20. (b) and (c) are not
+  tested against each other.
+  - Elastic net: **Holm across the four tests (2 variants × 2 outcomes).**
+    These four tests are the analysis's inference.
+  - Random forest: the same four tests, reported uncorrected, as secondary.
+- **Correlations.** As above, with new 20 (c) as a third family of 20, BH
+  within each outcome.
+
+This supersedes, for (c) only, "the single primary variant", "No other variant
+is computed or analysed on this branch" and "No other … POS set", and replaces
+"Holm across the two outcomes" with the four-test family above.
