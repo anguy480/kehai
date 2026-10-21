@@ -8,8 +8,9 @@ only.
 
 Branch `exploratory/per-modality`, from `main` at `decaa1d`. This file is
 committed and pushed before any model or correlation on this branch sees a
-label. Everything that reads labels is run by the label holder (Tanaka) from a
-command committed here; no label, score, prediction, residual or result is
+label. Everything that reads labels is run by the label holder (the project
+owner, who has held the labels since 2026-10-01; see `docs/analysis-log.md`)
+from a command committed here; no label, score, prediction, residual or result is
 written to this repository.
 
 ## Question

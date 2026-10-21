@@ -4,7 +4,9 @@
 [the pre-registration](../prereg/per-modality.md) and, as data, in
 [`config/exploratory/per_modality.yaml`](../../config/exploratory/per_modality.yaml).
 This page covers only how to run it. Every step that reads labels is run by
-the label holder, on the label holder's machine.
+the label holder (the project owner, who has held the labels since
+2026-10-01), on the machine that holds them. Claude Code never runs these steps
+and never reads their results.
 
 The analysis runs in two parts, because the face features exist only after
 OpenFace extraction:
@@ -19,9 +21,10 @@ run's results folder: the second run needs it.
 
 ## What you need
 
-- A checkout of this repository on branch `exploratory/per-modality`, at the
-  commit named in the message that sent you here. The command refuses to run
-  from a checkout with uncommitted changes.
+- A clean checkout of branch `exploratory/per-modality` at or after the commit
+  recorded for the run in `docs/analysis-log.md`. The command refuses to run
+  from a checkout with uncommitted or untracked files; a detached worktree at
+  the pushed commit is the simplest way to get one.
 - `uv` (it installs the environment on first run). No `.env`, no data folders
   and no ffmpeg are needed.
 - The bundle folder from 2026-09-29, `20260929_4d8a5a1eab8d`. The command checks
@@ -61,9 +64,11 @@ No file holds a label value, a prediction or a residual.
 
 ## Run 2: the face modalities
 
-Run it after run 1, from the commit named in the message that sent you here.
+Run it after run 1, from a clean checkout at or after the commit recorded for
+run 2 in `docs/analysis-log.md`.
 Besides the labels and run 1's results folder, it needs the OpenFace face table,
-`face_openface_features.csv`, sent to you separately. It holds facial features
+`face_openface_features.csv`, which `face-table` wrote to
+`$VC_OUT_ROOT/exploratory/per_modality/`. It holds facial features
 only, no label. The command checks its SHA-256 against the one fixed in
 [the plan](../../config/exploratory/per_modality.yaml) (`6d67cfb0aad7...`) and
 refuses any other file.
