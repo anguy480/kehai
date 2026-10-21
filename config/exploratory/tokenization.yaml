@@ -10,4 +10,4 @@ feature_tables:
     sha256: "f5f935230493880c669dcc401126d308f663fad9815170ce5609f548fbc91c3a"  # pragma: allowlist secret - a file digest, not a credential
   new_c:
     file: "text_features_new_c.csv"
-    sha256: null
+    sha256: "2182bba286c0decd62a34b751d6e8fbdca76b40eeadf4d583ba758fee7fb25b9"  # pragma: allowlist secret - a file digest, not a credential
