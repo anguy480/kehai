@@ -61,23 +61,52 @@ No file holds a label value, a prediction or a residual.
 
 ## Run 2: the face modalities
 
-Not ready yet. It needs the OpenFace face table and a commit that fixes that
-table's digest in the plan. The command will be:
+Run it after run 1, from the commit named in the message that sent you here.
+Besides the labels and run 1's results folder, it needs the OpenFace face table,
+`face_openface_features.csv`, sent to you separately. It holds facial features
+only, no label. The command checks its SHA-256 against the one fixed in
+[the plan](../../config/exploratory/per_modality.yaml) (`6d67cfb0aad7...`) and
+refuses any other file.
 
 ```sh
+cd <your checkout of the repository>
+git fetch origin
+git checkout exploratory/per-modality
+git pull --ff-only
+
 uv run python -m vc_multimodal.exploratory.per_modality analyze --run second \
-    --face-table <path to the face table> \
+    --face-table <path to face_openface_features.csv> \
     --labels <path to the labels CSV> \
     --prior <the run 1 results folder> \
     --out <new folder for run 2 results>
 ```
 
+`--prior` must be run 1's folder as run 1 wrote it. The command refuses a folder
+from another analysis, another bundle or another permutation count, since its
+results could not then share a correction.
+
+What it writes to `--out`:
+
+| File | Contents |
+| --- | --- |
+| `univariate.csv` | Analysis A for the 18 face features, raw values as in run 1. |
+| `models.csv` | Analysis B for the two face modalities, raw values as in run 1. |
+| `final_univariate.csv` | Analysis A for all four modalities, with BH q within each outcome across the whole family. |
+| `final_models.csv` | Analysis B for all four modalities, with Holm p across the 8 elastic-net tests. |
+| `summary.md` | The final tables, readable. |
+| `run.json` | Commit, plan and input digests, run 1's commit and inputs, sessions per modality, timing and package versions. |
+| `logs/` | The run log. |
+
+No file holds a label value, a prediction or a residual. Session 43's row in the
+face table is blank, by a QC note, so it is left out of the face modalities.
+
 ## Runtime
 
 Run 1, measured on 2026-10-21 on an Apple M2 with 8 workers: about **2.0 h** at
 the planned 1000 permutations. The random forests dominate, at about 7 s per
-permutation each against about 1.8 s for the elastic nets. Run 2 has the same
-number of models on fewer features, so expect about the same.
+permutation each against about 1.8 s for the elastic nets.
+
+Run 2, measured the same way on the same machine: about **0.5 h**.
 
 To measure it on your own machine, `estimate` fits on random targets and reads
 no labels:
@@ -85,4 +114,6 @@ no labels:
 ```sh
 uv run python -m vc_multimodal.exploratory.per_modality estimate --run first \
     --bundle <path to 20260929_4d8a5a1eab8d>
+uv run python -m vc_multimodal.exploratory.per_modality estimate --run second \
+    --face-table <path to face_openface_features.csv>
 ```
