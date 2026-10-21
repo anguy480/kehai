@@ -107,14 +107,15 @@ face table is blank, by a QC note, so it is left out of the face modalities.
 
 ## Runtime
 
-Run 1, measured on 2026-10-21 on an Apple M2 with 8 workers: about **2.0 h** at
-the planned 1000 permutations. The random forests dominate, at about 7 s per
-permutation each against about 1.8 s for the elastic nets.
+Run 1, as made on 2026-10-22 on an Apple M2 with 8 workers: about **0.5 h**
+(31 min) at the planned 1000 permutations. The 2.0 h first written here, from
+`estimate` on 2026-10-21, was about four times too long.
 
-Run 2, measured the same way on the same machine: about **0.5 h**.
+Run 2, made the same day on the same machine: about **0.5 h** (30 min), as
+`estimate` predicted.
 
 To measure it on your own machine, `estimate` fits on random targets and reads
-no labels:
+no labels. Its figure for run 1 is an overestimate:
 
 ```sh
 uv run python -m vc_multimodal.exploratory.per_modality estimate --run first \
