@@ -43,3 +43,16 @@ request:
   # times, with backoff, before the run stops. They are not rating attempts:
   # nothing came back to rate.
   transient_retries: 5
+
+# The analysis (step 3) reads these two tables and refuses either unless its
+# SHA-256 matches. The LLM table's is fixed after the full run, in a commit of
+# its own, pushed before the analysis is run.
+analysis:
+  llm_features:
+    file: "llm_ratings_features.csv"
+    sha256: null
+  # The manuscript's 20 text features with a session_id column, written by step
+  # 2 of the tokenization rerun (branch exploratory/tokenization).
+  text_features:
+    file: "text_features_original.csv"
+    sha256: "da984428e499df0bfd406e0139adb4329ab2aefb8bc3c0118e04e8e85b8ffd71"  # pragma: allowlist secret - a file digest, not a credential

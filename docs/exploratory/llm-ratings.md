@@ -4,10 +4,11 @@
 [the pre-registration](../prereg/llm-ratings.md), and the prompt in
 [`config/exploratory/llm_ratings_prompt.txt`](../../config/exploratory/llm_ratings_prompt.txt).
 This page covers only how to run it. Rating reads the transcripts and no label,
-so the project owner runs it. Claude Code never reads the transcripts, the
-model's responses, the ratings or any result.
+so the project owner runs it; the analysis reads the labels, so the label
+holder, who is also the project owner, runs it. Claude Code never reads the
+transcripts, the model's responses, the ratings, the labels or any result.
 
-There are three steps:
+There are four steps:
 
 1. **Choose the backend**, in a commit of its own. Until then no call can be
    made.
@@ -15,6 +16,8 @@ There are three steps:
    It prints counts only, no rating.
 3. **Full run:** every session, reusing the pilot's calls. It writes the
    feature table the analysis reads.
+4. **Analysis:** once the feature table's SHA-256 is fixed in the plan. It
+   reads the labels.
 
 ## What you need
 
@@ -110,3 +113,52 @@ not cached, so a rerun does.
 Then paste the output back, and the feature table's SHA-256
 (`shasum -a 256 <out>/llm_ratings_features.csv`). The SHA-256 is fixed in the
 plan in a commit of its own before the analysis, which refuses any other table.
+
+## 4. Analysis
+
+Run it after the feature table's SHA-256 has been fixed in
+`config/exploratory/llm_ratings.yaml` (`analysis.llm_features.sha256`), in a
+commit of its own, pushed, from a clean checkout at or after that commit. Until
+then it refuses to run. Besides the labels it reads:
+
+- `llm_ratings_features.csv` from step 3, by default in
+  `$VC_OUT_ROOT/exploratory/llm_ratings/` (`--features` for another path).
+- `text_features_original.csv`, the manuscript's 20 text features with a
+  `session_id` column, written by step 2 of the tokenization rerun, by default
+  in `$VC_OUT_ROOT/exploratory/tokenization/` (`--text-features` for another
+  path). Its SHA-256 is already fixed in the plan (`da984428e499...`).
+
+The labels are a CSV with a `session_id` column (`session` or `id` also work)
+and columns named `K6` and `SRS2`.
+
+To time it first, on random targets and without labels:
+
+```sh
+uv run python -m vc_multimodal.exploratory.llm_ratings estimate
+```
+
+Then:
+
+```sh
+uv run python -m vc_multimodal.exploratory.llm_ratings analyze \
+    --labels <path to the labels CSV> \
+    --out <new folder for the results>
+```
+
+`--out` defaults to `$VC_OUT_ROOT/unblinded/<date>_llm_ratings_<commit>`, and
+must be a new folder. `--jobs` sets the number of parallel workers (default:
+every CPU). It prints the sessions analysed per outcome, any session the rater
+did not rate (left out of everything, both arms of the comparison included),
+and the files it wrote:
+
+| File | Contents |
+| --- | --- |
+| `primary_tests.csv` | The six primary tests (zero-shot, LLM alone, added value; K6 and SRS-2), with raw p and Holm p across the six. |
+| `models.csv` | One row per feature set (`llm`, `text`, `text_llm`), outcome and model: LOO R², MAE and rho, the repeated 5-fold R², the permutation null and p, and non-converged fits. |
+| `comparisons.csv` | Added value for both models: Wilcoxon on per-session LOO absolute errors, the random forest uncorrected. |
+| `univariate.csv` | Spearman rho, p and BH q (within each outcome, across the 11) for each LLM feature. |
+| `summary.md` | The same, as readable tables. |
+| `run.json` | Commit, input digests, settings, sessions analysed, timing and package versions. |
+| `logs/` | The run log. |
+
+No file holds a label value, a rating, a prediction or a residual.
