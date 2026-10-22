@@ -15,14 +15,16 @@ prompt:
 
 # No default: no call is made until this is set to "openai" or "local", in a
 # commit of its own with a dated line in docs/analysis-log.md, before the pilot.
-# "openai" sends the full dialogue to the OpenAI API, so it waits on Tanaka's
-# confirmation that an outside API is allowed for these transcripts.
-backend: null
+# "openai" sends the full dialogue to the OpenAI API; Tanaka approved that for
+# these transcripts.
+backend: "openai"
 
 backends:
   openai:
     base_url: "https://api.openai.com/v1"
-    model: "gpt-4.1-mini"
+    # The dated snapshot of gpt-4.1-mini, not the alias, so the model cannot
+    # change under the ratings.
+    model: "gpt-4.1-mini-2025-04-14"
     # The environment variable holding the key. The key is never written down.
     api_key_env: "OPENAI_API_KEY"  # pragma: allowlist secret - a variable name, not a key
   local:
