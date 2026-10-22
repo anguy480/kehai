@@ -3,7 +3,8 @@
 **Status: exploratory.** Fixed on 2026-10-22, after the labels were received on
 2026-10-01 (see [the analysis log](../analysis-log.md)). Nothing here changes the
 confirmatory analysis run from `4d8a5a1`, and no result may be described in
-confirmatory terms.
+confirmatory terms. [Amendment 1](#amendment-1-2026-10-22-intervals-for-the-added-value-post-hoc),
+at the end, was added after the primary results had been seen and is post hoc.
 
 Branch `exploratory/llm-ratings`, from `main` at `decaa1d`. This file and the
 prompt it names are committed and pushed before any transcript is rated and
