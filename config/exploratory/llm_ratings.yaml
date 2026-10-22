@@ -52,7 +52,7 @@ request:
 analysis:
   llm_features:
     file: "llm_ratings_features.csv"
-    sha256: null
+    sha256: "050056e11feda5a1fd17aa23f17ebedb8f789163afa08509e0efa0d5489412f6"  # pragma: allowlist secret - a file digest, not a credential
   # The manuscript's 20 text features with a session_id column, written by step
   # 2 of the tokenization rerun (branch exploratory/tokenization).
   text_features:
