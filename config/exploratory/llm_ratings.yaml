@@ -1,0 +1,45 @@
+# LLM ratings of transcripts as features. EXPLORATORY, fixed after the labels
+# were received. The plan is docs/prereg/llm-ratings.md; the rater reads the
+# prompt and the backend from here and nowhere else.
+#
+# What the plan fixes (temperature 0, 3 calls per session, at most 3 retries,
+# a pilot of the three lowest session numbers) is in the code, not here, so it
+# cannot drift with a config edit.
+
+prereg: "docs/prereg/llm-ratings.md"
+
+# The rater refuses any prompt file whose SHA-256 differs.
+prompt:
+  file: "config/exploratory/llm_ratings_prompt.txt"
+  sha256: "cf5c42bce6156c26a7788695c9416c0d90bb57347a1eb5fe73c8ec162498b882"  # pragma: allowlist secret - a file digest, not a credential
+
+# No default: no call is made until this is set to "openai" or "local", in a
+# commit of its own with a dated line in docs/analysis-log.md, before the pilot.
+# "openai" sends the full dialogue to the OpenAI API, so it waits on Tanaka's
+# confirmation that an outside API is allowed for these transcripts.
+backend: null
+
+backends:
+  openai:
+    base_url: "https://api.openai.com/v1"
+    model: "gpt-4.1-mini"
+    # The environment variable holding the key. The key is never written down.
+    api_key_env: "OPENAI_API_KEY"  # pragma: allowlist secret - a variable name, not a key
+  local:
+    # Any OpenAI-compatible server (vLLM, llama.cpp, Ollama, LM Studio), e.g.
+    # "http://127.0.0.1:8000/v1", and the model name it serves.
+    base_url: null
+    model: null
+    api_key_env: null
+
+request:
+  # Seconds to wait for one response. A whole session is one prompt, so a
+  # local model may take minutes.
+  timeout_s: 600
+  # Room for the 11-key object and nothing more; a response cut off here is
+  # malformed and retried.
+  max_output_tokens: 300
+  # Network failures, rate limits and server errors are retried this many
+  # times, with backoff, before the run stops. They are not rating attempts:
+  # nothing came back to rate.
+  transient_retries: 5
