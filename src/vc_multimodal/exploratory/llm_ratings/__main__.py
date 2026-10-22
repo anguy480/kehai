@@ -14,6 +14,12 @@ aggregate summary; it prints the same counts and each item's ICC.
 `estimate` times the analysis on random targets and reads no label. `analyze`
 (step 3) reads the labels, so only the label holder runs it, from a clean
 checkout; it prints coverage and the files it wrote, not results.
+
+`intervals` is Amendment 1, post hoc: it recomputes the added-value models'
+leave-one-out predictions, stops unless they reproduce the primary run's
+`models.csv` within 1e-9, and writes bootstrap intervals. It reads the labels,
+so only the label holder runs it; it prints the gate and the files, not the
+intervals.
 """
 
 from __future__ import annotations
@@ -28,7 +34,7 @@ from typing import Final
 import typer
 
 from vc_multimodal.config import ConfigError, load_config
-from vc_multimodal.exploratory.llm_ratings import analyze, rater
+from vc_multimodal.exploratory.llm_ratings import analyze, intervals, rater
 from vc_multimodal.exploratory.llm_ratings.backend import BackendUnavailableError, make_backend
 from vc_multimodal.exploratory.llm_ratings.dialogue import TranscriptError, transcript_files
 from vc_multimodal.exploratory.llm_ratings.plan import (
@@ -75,6 +81,11 @@ def _parser() -> argparse.ArgumentParser:
     for name, text in (
         ("estimate", "Time the analysis on random targets. Reads no label."),
         ("analyze", "Step 3: the pre-registered analysis. Reads the labels."),
+        (
+            "intervals",
+            "Amendment 1, post hoc: bootstrap intervals for the added value. Reads the labels "
+            "and the primary results folder.",
+        ),
     ):
         step = steps.add_parser(name, help=text)
         step.add_argument(
@@ -94,15 +105,19 @@ def _parser() -> argparse.ArgumentParser:
         step.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
         if name == "estimate":
             step.add_argument("--probe", type=int, default=4, help="Permutations to time.")
+            continue
+        step.add_argument("--labels", type=Path, required=True, help="Labels CSV.")
+        if name == "analyze":
+            out_help = "Results folder. Default: unblinded/<date>_llm_ratings_<commit> under "
         else:
-            step.add_argument("--labels", type=Path, required=True, help="Labels CSV.")
             step.add_argument(
-                "--out",
+                "--results",
                 type=Path,
-                default=None,
-                help="Results folder. Default: unblinded/<date>_llm_ratings_<commit> under "
-                "the output root.",
+                required=True,
+                help="The primary analysis's results folder, holding its models.csv and run.json.",
             )
+            out_help = f"Results folder. Default: unblinded/{intervals.OUT_DIRNAME} under "
+        step.add_argument("--out", type=Path, default=None, help=out_help + "the output root.")
     return parser
 
 
@@ -216,13 +231,30 @@ def _analysis(args: argparse.Namespace) -> list[str]:
         if roots is None:
             msg = "VC_OUT_ROOT is not set, so say where results go with --out"
             raise analyze.AnalyzeError(msg)
-        out_dir = roots.out / UNBLINDED_DIR / f"{datetime.now():%Y%m%d}_llm_ratings_{git.short}"
+        folder = (
+            intervals.OUT_DIRNAME
+            if args.step == "intervals"
+            else f"{datetime.now():%Y%m%d}_llm_ratings_{git.short}"
+        )
+        out_dir = roots.out / UNBLINDED_DIR / folder
     analyze.refuse_used_folder(out_dir)
-    log = configure_logging("INFO", log_file=log_file_path(out_dir, analyze.STAGE))
+    stage = intervals.STAGE if args.step == "intervals" else analyze.STAGE
+    log = configure_logging("INFO", log_file=log_file_path(out_dir, stage))
     lines = [f"log: {log}"] if log is not None else []
-    result = analyze.run(
-        llm_path, text_path, args.labels, out_dir, commit=git.commit, jobs=args.jobs
-    )
+    if args.step == "intervals":
+        result: analyze.RunResult | intervals.IntervalsResult = intervals.run(
+            llm_path,
+            text_path,
+            args.labels,
+            args.results,
+            out_dir,
+            commit=git.commit,
+            jobs=args.jobs,
+        )
+    else:
+        result = analyze.run(
+            llm_path, text_path, args.labels, out_dir, commit=git.commit, jobs=args.jobs
+        )
     return lines + result.report_lines()
 
 

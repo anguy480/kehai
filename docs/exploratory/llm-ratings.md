@@ -165,3 +165,41 @@ and the files it wrote:
 | `logs/` | The run log. |
 
 No file holds a label value, a rating, a prediction or a residual.
+
+## 5. Post hoc intervals for the added value (Amendment 1)
+
+**Post hoc**: [Amendment 1](../prereg/llm-ratings.md#amendment-1-2026-10-22-intervals-for-the-added-value-post-hoc)
+was decided after the primary results had been seen. Run it from a clean
+checkout at or after the commit that added this section, giving it the primary
+analysis's results folder:
+
+```sh
+uv run python -m vc_multimodal.exploratory.llm_ratings intervals \
+    --labels <path to the labels CSV> \
+    --results <the primary analysis's results folder>
+```
+
+It reads the same two tables as step 4 (`--features` and `--text-features` as
+there), checks that the primary run's `run.json` records the planned settings
+and the same input SHA-256s, and recomputes the leave-one-out predictions of the
+8 added-value models (text and text + LLM; K6 and SRS-2; elastic net and random
+forest). Unless every recomputed n, R² and MAE matches the primary `models.csv`
+within 1e-9, it stops and writes nothing. It then draws 10,000 paired bootstrap
+resamples of the sessions per outcome (seed `20260923`) and prints the gate, the
+sessions and the files it wrote, not the intervals. The recomputation is the
+slow part, a few minutes; `--jobs` (default: every CPU) runs the 8 models in
+parallel.
+
+`--out` defaults to `$VC_OUT_ROOT/unblinded/llm_ratings_intervals` and must be a
+new folder.
+
+| File | Contents |
+| --- | --- |
+| `intervals.csv` | 8 rows: for each outcome and model, ΔR² and ΔMAE ((text + LLM) minus text), the point estimate, the 95% percentile interval, and the resamples used. |
+| `intervals.md` | The same as a table, the post hoc statement, the limitation, and the commit, seed and SHA-256s of the primary `models.csv` and the inputs. |
+| `logs/` | The run log. |
+
+A gain from the LLM features is a positive ΔR² and a negative ΔMAE. There is no
+p-value: the intervals describe, and the Wilcoxon tests of step 4 remain the
+tests. The bootstrap does not refit the models, so the intervals are likely
+somewhat too narrow.
