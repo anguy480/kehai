@@ -188,3 +188,54 @@ per-session rating, label, prediction or error.
 - No prompt variants, no other model, no other temperature, no chain of thought.
 - No per-item model against single questionnaire items.
 - No ratings of the doctor.
+
+## Amendment 1, 2026-10-22: intervals for the added value (post hoc)
+
+**Post hoc.** Decided on 2026-10-22, after the primary results had been seen,
+to quantify how large a gain from the 11 LLM features the data can rule out. It
+was not planned before any label was used. It changes no result above, adds no
+test, and its intervals must be reported as post hoc. It is committed and pushed
+before it is run.
+
+- **Comparisons.** Analysis 3's pairs: the 20 text features against those 20
+  plus the 11 LLM features, for K6 and SRS-2, elastic net and random forest.
+  That is 4 comparisons, each with two differences, so 8 intervals.
+- **Predictions.** The leave-one-out predictions of those 8 models are
+  recomputed with `evaluate` from `modeling/evaluate.py`, unchanged, on the same
+  two tables (the same SHA-256s), the same sessions, seed `20260923` and the
+  same pipelines. Only the leave-one-out step is rerun; it does not depend on
+  the repeated 5-fold or the permutations.
+- **Gate.** Each recomputed leave-one-out R² and MAE must match the primary
+  run's `models.csv` within 1e-9 (absolute difference), and the primary run's
+  `run.json` must record the planned settings and the same input digests.
+  Otherwise the run stops and writes nothing.
+- **Differences.** ΔR² = R²(text + LLM) − R²(text), and ΔMAE = MAE(text + LLM)
+  − MAE(text). A gain from the LLM features is a positive ΔR² and a negative
+  ΔMAE. The point estimate is the difference over all sessions analysed, which
+  equals the difference of the two models' values in `models.csv`.
+- **Paired bootstrap over sessions.** Each resample draws n sessions with
+  replacement, n being the sessions analysed for that outcome (62 if every
+  session is rated and labelled). Both models are scored on the same resampled
+  sessions, from their fixed leave-one-out predictions. R² in a resample is
+  1 − SSE/SST, with SST taken around that resample's own mean of the outcome, as
+  `score_predictions` computes it. There are 10,000 resamples. For each outcome
+  the indices are drawn by `numpy.random.default_rng(20260923)`, and the elastic
+  net and the random forest share them. A resample in which the outcome is
+  constant has no R²: it is left out of the ΔR² interval and counted (expected
+  0).
+- **Interval.** The point estimate and the 95% percentile interval: the 2.5th
+  and 97.5th percentiles of the 10,000 resampled differences (`numpy.quantile`,
+  linear interpolation).
+- **No tests.** No p-value and no multiplicity correction: these intervals
+  describe, they do not test. Whether one excludes zero is not a new test of
+  added value; the Wilcoxon tests of analysis 3 remain the tests.
+- **Limitation.** The bootstrap resamples fixed leave-one-out predictions and
+  does not refit the models on each resample, so it does not capture the
+  variability from refitting. The intervals are likely somewhat too narrow.
+- **Outputs.** `intervals.csv` and `intervals.md` in a new folder outside the
+  repository, by default `$VC_OUT_ROOT/unblinded/llm_ratings_intervals`. For
+  each interval they hold the outcome, model, metric, n, point estimate, bounds
+  and resamples used, and `intervals.md` records the commit, the SHA-256 of the
+  primary `models.csv`, the input digests and the seed. No file or terminal line
+  holds a per-session value; the terminal shows the gate and the files written,
+  not the intervals.
