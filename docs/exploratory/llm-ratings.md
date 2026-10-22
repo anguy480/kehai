@@ -41,10 +41,13 @@ set `backend` to one of:
   Studio. If it needs a key, set `api_key_env` to the name of the variable
   holding it. The server must accept `response_format: {"type": "json_object"}`
   and a context long enough for a whole session; the pilot shows both.
-- **`openai`**: `gpt-4.1-mini`, only once Tanaka has confirmed that an outside
-  API is allowed for these transcripts. It sends each full session dialogue to
-  OpenAI. Put the key in `OPENAI_API_KEY` in your shell, never in a file in
-  the repository.
+- **`openai`**: `gpt-4.1-mini`, pinned to a dated snapshot, only once Tanaka
+  has confirmed that an outside API is allowed for these transcripts. It sends
+  each full session dialogue to OpenAI. Put the key in `OPENAI_API_KEY`,
+  either in your shell or in `.env` in the folder you run the command from (it
+  is gitignored, and a worktree has its own). Never put it in a tracked file.
+
+The backend is set: `openai` with `gpt-4.1-mini-2025-04-14`, at `b6fbd48`.
 
 Commit that change on its own, with a dated line in `docs/analysis-log.md`
 naming the backend and model, and push it before the pilot. The pre-registration
