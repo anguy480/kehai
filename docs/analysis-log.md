@@ -31,12 +31,10 @@ value, per-session score, prediction or residual is ever written here.
   analysis.
 - **Confirmatory run**, 2026-10-01 13:57-15:05 JST: `vc model` from a clean
   checkout of `4d8a5a1eab8d`, environment matching the manifest's 11 recorded
-  package versions, on the bundle's `features.csv`; 62 sessions modelled, exit
-  0, `n_fits_not_converged` 0 in all 40 estimates. Outputs are under
-  `$VC_OUT_ROOT/unblinded/20261001_4d8a5a1eab8d/results/`. Holm-adjusted p for
-  the four pre-registered tests: audio vs text, K6 0.0046 (text closer);
-  all vs text, K6 0.0039 (text closer); audio vs text, SRS2 0.241; all vs
-  text, SRS2 0.241.
+  package versions, on the bundle's `features.csv`, over the 62 sessions; exit
+  0. Outputs are under
+  `$VC_OUT_ROOT/unblinded/20261001_4d8a5a1eab8d/results/`. No result is
+  recorded here.
 - The bundle README's command (`uv run vc model ...` from the bundle directory)
   fails there with exit 2, `config file not found: config/default.yaml`,
   before the labels are read. The run above is that command issued from the
