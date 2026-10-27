@@ -114,10 +114,58 @@ keeps working after `conda deactivate`. Homebrew cannot install ffmpeg on this
 macOS version; the project never tries to install it, and fails at startup with
 a clear message if it is missing.
 
+### OpenFace
+
+`vc face --backend openface` runs OpenFace 2.x's `FeatureExtraction` on the
+participant's tile, keeps its CSV under `$VC_WORK_ROOT/face_openface/csv/`, and
+writes its per-frame measures to `$VC_WORK_ROOT/face_openface/` with QC in
+`$VC_OUT_ROOT/face_openface_qc.csv`. It never touches the MediaPipe outputs in
+`face/` and `face_qc.csv`. Without the binary, it imports CSVs already in that
+folder, so a run made elsewhere can be copied in.
+
+**Linux (Ubuntu 20.04 or 22.04).** OpenFace's own script installs OpenCV 4,
+dlib and OpenBLAS and builds it:
+
+```bash
+git clone https://github.com/TadasBaltrusaitis/OpenFace.git && cd OpenFace
+bash ./download_models.sh       # the CE-CLM patch experts, about 430 MB
+sudo bash ./install.sh          # dependencies, then build/ with bin/FeatureExtraction
+```
+
+**macOS on Apple silicon.** Homebrew's OpenCV does not install on macOS 14, so
+take the dependencies from conda-forge and build dlib yourself. This is what
+was used on the development machine, with no change to OpenFace's source:
+
+```bash
+micromamba create -p ./env -c conda-forge "libopencv=4.*" openblas libboost-devel \
+    tbb-devel cmake make cxx-compiler pkg-config
+# dlib 20 (19.x does not compile against conda-forge's current libc++)
+cmake -S dlib-20.0 -B dlib-build -DCMAKE_INSTALL_PREFIX=$PWD/env -DBUILD_SHARED_LIBS=ON \
+    -DDLIB_NO_GUI_SUPPORT=ON && cmake --build dlib-build -j && cmake --install dlib-build
+OpenBLAS_HOME=$PWD/env cmake -S OpenFace -B of-build -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PREFIX_PATH=$PWD/env -DCMAKE_BUILD_RPATH=$PWD/env/lib
+cmake --build of-build --target FeatureExtraction -j
+# then put the four cen_patches_*.dat from download_models.sh in
+# of-build/bin/model/patch_experts/
+```
+
+**Either way**, set `VC_OPENFACE_BIN` in `.env` to the absolute path of
+`FeatureExtraction` inside the build's `bin` folder (it finds its models beside
+itself, so use that copy rather than an installed one), then run the stage:
+
+```bash
+uv run vc --workers 3 face --backend openface
+```
+
+ffmpeg needs `libx264` for the scratch tile video, which is deleted after each
+session. `face.openface.smoothing_s` (1.0 s, docs/prereg/per-modality.md) is
+applied before the frames are sampled.
+
 ## Environment variables
 
 | Variable | Purpose |
 | --- | --- |
+| `VC_OPENFACE_BIN` | Optional. OpenFace's `FeatureExtraction`, for `vc face --backend openface`; falls back to `PATH`. |
 | `VC_DATA_ROOT` | Read-only raw media: five date folders of `<session_id>.mp4`. |
 | `VC_WORK_ROOT` | Intermediates: audio, diarization segments, transcripts. |
 | `VC_OUT_ROOT` | Outputs: inventory, previews, logs, features, handoff bundles. |

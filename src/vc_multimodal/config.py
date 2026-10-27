@@ -598,11 +598,18 @@ class MediaPipeConfig(_Base):
 
 
 class OpenFaceConfig(_Base):
-    """Importer for OpenFace 2.0 CSV output produced on a lab machine."""
+    """OpenFace 2.x: run here when the binary is available, else import its CSVs."""
 
     csv_dir: str | None
     confidence_column: str
     success_column: str
+    # FeatureExtraction, when OpenFace runs on this machine. None looks for
+    # $VC_OPENFACE_BIN, then FeatureExtraction on PATH; without either, only
+    # CSVs already in csv_dir are read.
+    executable: str | None = None
+    # Centred rolling mean over this many seconds, applied to each action unit
+    # within runs of valid frames before sampling. None leaves them unsmoothed.
+    smoothing_s: float | None = Field(default=None, gt=0.0)
 
 
 class FaceConfig(_Base):

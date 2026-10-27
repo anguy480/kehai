@@ -157,6 +157,86 @@ def kept(measures: Sequence[FrameMeasure]) -> tuple[FrameMeasure, ...]:
     return tuple(measure for measure in measures if measure.detected)
 
 
+def smoothing_window(fps: float, seconds: float) -> int:
+    """A centred window of `seconds` at `fps`, in frames.
+
+    Rounded to the nearest whole frame and raised by one if even, so that it
+    has a middle frame: at 25 fps, 1.0 s is 25 frames.
+
+    Raises:
+        ValueError: if either value is not positive.
+    """
+    if fps <= 0.0 or seconds <= 0.0:
+        msg = f"a smoothing window needs a positive fps and duration, got {fps} and {seconds}"
+        raise ValueError(msg)
+    frames = max(1, round(fps * seconds))
+    return frames if frames % 2 == 1 else frames + 1
+
+
+def smooth_within_runs(
+    frame_index: Sequence[int] | np.ndarray,
+    valid: Sequence[bool] | np.ndarray,
+    values: Sequence[float] | np.ndarray,
+    window: int,
+) -> np.ndarray:
+    """Centred rolling mean, separately within each run of valid frames.
+
+    A run is a stretch of consecutive frame indices that are all valid and
+    finite. The mean never reaches across an invalid frame or a gap in the
+    frame numbering, so a dropped face cannot leak a neighbour's expression
+    into the frames beside it. At the edges of a run the mean is taken over the
+    frames of the run inside the window, so no frame is lost for sitting next
+    to a gap.
+
+    Args:
+        frame_index: Frame numbers, in ascending order.
+        valid: Which frames had a usable face.
+        values: One measure per frame.
+        window: Window length in frames, odd.
+
+    Returns:
+        The smoothed values, NaN wherever the frame is not valid.
+
+    Raises:
+        ValueError: if the inputs disagree in length, the frames are not in
+            ascending order, or the window is not a positive odd number.
+    """
+    if window < 1 or window % 2 == 0:
+        msg = f"the window must be a positive odd number of frames, got {window}"
+        raise ValueError(msg)
+    index = np.asarray(frame_index, dtype=np.int64)
+    data = np.asarray(values, dtype=np.float64)
+    usable = np.asarray(valid, dtype=bool) & np.isfinite(data)
+    if not (index.shape == data.shape == usable.shape):
+        msg = "frame_index, valid and values must have the same length"
+        raise ValueError(msg)
+    if index.size > 1 and np.any(np.diff(index) <= 0):
+        msg = "frame_index must be strictly ascending"
+        raise ValueError(msg)
+
+    smoothed = np.full(data.shape, np.nan, dtype=np.float64)
+    # A run starts wherever a usable frame does not directly follow another.
+    follows = np.zeros(index.size, dtype=bool)
+    follows[1:] = usable[1:] & usable[:-1] & (np.diff(index) == 1)
+    starts = np.flatnonzero(usable & ~follows)
+    if starts.size == 0:
+        return smoothed
+    ends = np.append(starts[1:], index.size)
+    half = window // 2
+    for start, limit in zip(starts, ends, strict=True):
+        # The run continues while frames follow on; it cannot pass the next start.
+        stop = start + 1
+        while stop < limit and follows[stop]:
+            stop += 1
+        run = data[start:stop]
+        totals = np.concatenate(([0.0], np.cumsum(run)))
+        position = np.arange(run.size)
+        low = np.maximum(position - half, 0)
+        high = np.minimum(position + half + 1, run.size)
+        smoothed[start:stop] = (totals[high] - totals[low]) / (high - low)
+    return smoothed
+
+
 def apply_confidence_threshold(
     measures: Sequence[FrameMeasure], threshold: float
 ) -> tuple[FrameMeasure, ...]:

@@ -1,0 +1,107 @@
+# Per-modality evaluation. EXPLORATORY, fixed after the labels were received.
+#
+# The plan in docs/prereg/per-modality.md, as data. The analysis reads it from
+# here and nowhere else, and records its digest with every result. Changing any
+# value outside `inputs` changes the analysis digest, and the second run refuses
+# a first run made under a different one.
+
+prereg: "docs/prereg/per-modality.md"
+targets: ["K6", "SRS2"]
+
+# Files the analysis reads, refused unless their SHA-256 matches. Not part of
+# the analysis digest: the face table can only be fixed once it is extracted,
+# which happens after the first run is handed off.
+inputs:
+  # features.csv sent in the 4d8a5a1 bundle (docs/analysis-log.md, 2026-10-02).
+  base_features_sha256: "375a38b0c8bb138b04ed07ff6504f04a39be7df7fe9df36609d394070e750f49"  # pragma: allowlist secret - a file digest, not a credential
+  # The OpenFace face table, face_openface_features.csv, built by `face-table`
+  # at aef1852 on 2026-10-21. Fixed in a commit of its own, pushed before the
+  # second run is handed off.
+  face_features_sha256: "6d67cfb0aad78a8d182972d8c77d261cd8c197a44a01de535c1c16dc133e2e3a"  # pragma: allowlist secret - a file digest, not a credential
+
+modalities:
+  prosody:
+    source: "base"
+    features:
+      - "prosody__f0_semitone_sd"
+      - "prosody__f0_semitone_iqr"
+      - "prosody__f0_semitone_range"
+      - "prosody__f0_semitone_mean_abs_delta"
+      - "prosody__voiced_fraction"
+      - "prosody__intensity_mean_db"
+      - "prosody__intensity_sd_db"
+      - "prosody__intensity_range_db"
+      - "prosody__jitter_local"
+      - "prosody__shimmer_local"
+      - "prosody__hnr_db"
+      - "prosody__speech_rate_proxy"
+  turns:
+    source: "base"
+    features:
+      - "turns__n_per_minute"
+      - "turns__participant_speaking_ratio"
+      - "turns__overlap_ratio"
+      - "turns__latency_mean"
+      - "turns__latency_median"
+      - "turns__latency_sd"
+      - "turns__interruption_rate"
+      - "turns__participant_turn_duration_mean"
+      - "turns__participant_turn_duration_sd"
+      - "turns__psychiatrist_turn_duration_mean"
+      - "turns__pause_within_mean"
+      - "turns__pause_within_rate"
+  face_speaking:
+    source: "face"
+    features:
+      - "face_speaking__au01_mean"
+      - "face_speaking__au01_sd"
+      - "face_speaking__au01_p90"
+      - "face_speaking__au06_mean"
+      - "face_speaking__au06_sd"
+      - "face_speaking__au06_p90"
+      - "face_speaking__au12_mean"
+      - "face_speaking__au12_sd"
+      - "face_speaking__au12_p90"
+  face_listening:
+    source: "face"
+    features:
+      - "face_listening__au01_mean"
+      - "face_listening__au01_sd"
+      - "face_listening__au01_p90"
+      - "face_listening__au06_mean"
+      - "face_listening__au06_sd"
+      - "face_listening__au06_p90"
+      - "face_listening__au12_mean"
+      - "face_listening__au12_sd"
+      - "face_listening__au12_p90"
+
+# The two handoffs, in order. Corrections are computed only by the last, over
+# the complete families.
+runs:
+  first: ["prosody", "turns"]
+  second: ["face_speaking", "face_listening"]
+
+# The confirmatory pipelines in modeling/evaluate.py, with the confirmatory
+# seed, schemes and permutation count (config/default.yaml at decaa1d).
+models:
+  primary: "elastic_net"
+  secondary: "random_forest"
+validation:
+  seed: 20260923
+  stability_folds: 5
+  stability_repeats: 20
+  permutation_folds: 5
+  n_permutations: 1000
+
+# Analysis A: BH within each target, across every testable feature of every
+# modality. Analysis B: Holm across the primary model's permutation p-values,
+# every modality x every target. The secondary model is uncorrected.
+correction:
+  univariate: "benjamini_hochberg"
+  primary_models: "holm"
+
+# Checked, not applied: the QC notes are applied upstream, and the analysis
+# refuses a table in which they were not.
+sessions:
+  face_unavailable: [43]
+  flagged: [52]
