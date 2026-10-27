@@ -14,6 +14,10 @@ against text. See
 [Amendment 1](#amendment-1-2026-10-27-text--nonverbal-against-text); where it
 and the text above differ, the amendment holds.
 
+**Corrected on 2026-10-27**, after the analysis was run: the outputs table
+miscounted the secondary tests. See
+[Correction 1](#correction-1-2026-10-27-four-secondary-tests-not-three).
+
 Asked for by Tanaka on 2026-10-27 (Slack): a combined model of all modalities,
 and each modality's contribution to it.
 
@@ -366,3 +370,17 @@ descriptive comparison and changes nothing else: no model, test or correction.
 - **112 intervals in all:** 14 comparisons × 2 outcomes × 2 models × 2
   differences. This replaces the 13 comparisons and 104 intervals above,
   wherever they appear, `contributions.csv` included.
+
+## Correction 1, 2026-10-27: four secondary tests, not three
+
+Made on 2026-10-27, after the analysis was run from `62746cd`. It corrects a
+miscount in the wording and changes no model, test or correction.
+
+The row for `primary_tests.csv` under
+[Commands and outputs](#commands-and-outputs) says "the three secondary tests".
+There are four, as [Primary tests](#primary-tests) defines them: the random
+forest's Wilcoxon of full against text for K6 and for SRS-2, and the random
+forest full model's permutation p for K6 and for SRS-2 (two of the four
+permutation nulls). All four are uncorrected. The code committed at `99291c8`
+computes and writes these four, so the run follows the plan as
+[Primary tests](#primary-tests) states it.
