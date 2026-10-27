@@ -8,6 +8,12 @@ confirmatory analysis run from `4d8a5a1`, and no result may be described in
 confirmatory terms. The correction below controls error within this analysis
 only.
 
+**Amended on 2026-10-27**, before any code for it was written and before any
+label was used on this branch: a 14th descriptive comparison, text + nonverbal
+against text. See
+[Amendment 1](#amendment-1-2026-10-27-text--nonverbal-against-text); where it
+and the text above differ, the amendment holds.
+
 Asked for by Tanaka on 2026-10-27 (Slack): a combined model of all modalities,
 and each modality's contribution to it.
 
@@ -334,3 +340,29 @@ face column comes from the bundle.
   model, and no repeated 5-fold for the contribution sets.
 - No imputation of session 43's face.
 - No other analysis is run on this branch under this pre-registration.
+
+## Amendment 1, 2026-10-27: text + nonverbal against text
+
+Added on 2026-10-27, after this file was pushed at `45755eb` and before any
+code for it was written or any label was used on this branch. It adds one
+descriptive comparison and changes nothing else: no model, test or correction.
+
+- **Comparison 14: text + nonverbal against text.** The larger model is the
+  full − llm set (text, prosody, turns, face_speaking, face_listening; 60
+  features), the smaller is text (20). It asks the project's original question,
+  whether the nonverbal modalities add to the manuscript's text features, with
+  the OpenFace face features. Both sets are among the 15 already fitted, so no
+  model is added.
+- **It is neither the confirmatory test nor a rerun of `text_plus_all`.** The
+  confirmatory `new_modalities_vs_text` compared the pre-registered nonverbal
+  features alone against text. `text_plus_all` used the MediaPipe face, both
+  constant turn features and 62 sessions, and was not compared with text.
+- **The same differences, sign convention and paired bootstrap** as the other
+  13, sharing their resample indices: ΔR² = R²(text + nonverbal) − R²(text) and
+  ΔMAE = MAE(text + nonverbal) − MAE(text), so a contribution of the nonverbal
+  modalities is a positive ΔR² and a negative ΔMAE.
+- **Descriptive:** no test and no correction. The four primary tests are
+  unchanged and remain the only inference.
+- **112 intervals in all:** 14 comparisons × 2 outcomes × 2 models × 2
+  differences. This replaces the 13 comparisons and 104 intervals above,
+  wherever they appear, `contributions.csv` included.
