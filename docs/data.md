@@ -83,8 +83,11 @@ a bundle.
 
 ## Labels, on the other machine
 
-The labels file never exists on the extraction machine. On the label holder's
-machine it is a CSV:
+Until 2026-10-01 the labels file never existed on the extraction machine. Since
+then the project owner holds it there, under `$VC_WORK_ROOT/labels/` and
+outside the repository
+([ADR 16](decisions/0016-labels-held-by-the-project-owner.md)). On the label
+holder's machine it is a CSV:
 
 ```csv
 session_id,K6,SRS2
