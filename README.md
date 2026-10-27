@@ -21,22 +21,33 @@ same sessions predict SRS-2 and K6 better than text does, alone and combined.
 
 ## The handoff model
 
-The questionnaire scores are held by the project's supervising professor and are
-never present on the extraction machine or in this repository. The pipeline is
-therefore split in two:
+The questionnaire scores are never in this repository. Until 2026-10-01 they
+were held by the project's supervising professor and were never on the
+extraction machine. Since 2026-10-01 the project owner holds them, on the
+extraction machine and outside the repository, with the professor's written
+approval. The pipeline is still split in two:
 
 ```
-  this machine (no labels, ever)          |   label holder's machine
+  extraction (reads no label)              |   label holder's step
   ---------------------------------------- | ---------------------------
   raw video -> ... -> features.csv         |   features.csv + labels.csv
                      handoff bundle  ======>   -> vc model
-                                          |   -> results.csv + summary.md
+                                           |   -> results.csv + summary.md
 ```
 
 Everything in this repo is designed to make that bundle trustworthy and
 self-explaining: it carries a feature dictionary, a per-session QC report, and a
 manifest recording the exact commit, config, package and model versions used.
-See [docs/decisions/0001-handoff-split-no-labels-on-student-machine.md](docs/decisions/0001-handoff-split-no-labels-on-student-machine.md).
+
+The confirmatory result is `vc model` run on 2026-10-01 from the frozen commit
+`4d8a5a1`, on the bundle built before the labels arrived. Every analysis since
+is exploratory, made on an `exploratory/*` branch after the labels were seen,
+and recorded in [docs/analysis-log.md](docs/analysis-log.md).
+
+See [ADR 1](docs/decisions/0001-handoff-split-no-labels-on-student-machine.md)
+for the split, and
+[ADR 16](docs/decisions/0016-labels-held-by-the-project-owner.md) for who holds
+the labels now.
 
 ## Data handling rules
 
@@ -143,7 +154,10 @@ Stage documentation fills in as each lands.
 ### Piloting
 
 Never run 62 sessions first. `config/pilot.yaml` lists a small set of session
-IDs; `make pilot` runs every stage over just those.
+IDs; `make pilot` runs the stages from `doctor` to `aggregate` over just those,
+stopping at the first that fails, and refuses to run if no pilot sessions are
+listed. It leaves out `verify-layout` and `assign-speakers`, which need optional
+extras; add them with `make pilot PILOT_STAGES="..."`.
 
 ```bash
 uv run vc doctor                            # is the environment ready?
@@ -158,7 +172,7 @@ uv run vc turns                             # needs a role mapping; see below
 uv run vc prosody                           # participant prosody, same mapping
 uv run vc face                              # action units in the participant tile
 uv run vc aggregate                         # one row per session: features.csv
-make pilot                                  # every stage, pilot sessions only
+make pilot                                  # doctor..aggregate, pilot sessions only
 ```
 
 Global options (`--config`, `--overlay`, `--sessions`, `--workers`, `--force`,

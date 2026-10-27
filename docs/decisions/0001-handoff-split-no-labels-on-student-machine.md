@@ -1,6 +1,8 @@
 # 1. Split the pipeline so labels never reach the extraction machine
 
-- Status: accepted
+- Status: accepted; superseded in part by
+  [ADR 16](0016-labels-held-by-the-project-owner.md), under which the labels
+  have been on the extraction machine since 2026-10-01
 - Date: 2026-09-23
 
 ## Context
