@@ -11,6 +11,14 @@ file, commit message and log entry.
 - Never open, read, list, print or copy anything under those roots, including
   previews, contact sheets, logs and feature tables. Run the scripts and look
   only at their summary output on the terminal.
+- One exception
+  ([ADR 17](docs/decisions/0017-claude-code-reads-summaries-on-request.md)):
+  when the label holder explicitly asks, for a named run, read that run's
+  `summary.md` or `intervals.md` under `$VC_OUT_ROOT/unblinded/`. Nothing else
+  there: no labels, per-session files, feature tables, other outputs or logs,
+  and not `model_summary.md`. A request covers only the run it names. Put
+  nothing you read into a file, commit or log line; record the reading in the
+  run's analysis-log line.
 - Never read, print or commit label files or label values. `.gitignore` and the
   `block-media-files` pre-commit hook are a safety net, not permission.
 - Tests use synthetic data only (`tests/synth/`). Never point a test at a real
