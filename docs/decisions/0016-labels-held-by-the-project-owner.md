@@ -9,6 +9,10 @@ Accepted. Supersedes, in part,
 longer kept off the extraction machine. The split of the code into a label-free
 extraction and a separate label holder's step stands.
 
+Amended in part by
+[ADR 17](0017-claude-code-reads-summaries-on-request.md): at the label holder's
+explicit request, Claude Code may read a run's `summary.md` or `intervals.md`.
+
 ## Context
 
 ADR 1 kept the questionnaire scores (K6, SRS-2) with the supervising professor,
